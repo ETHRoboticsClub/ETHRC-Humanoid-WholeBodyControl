@@ -19,7 +19,8 @@ from decoupled_wbc.control.sensor.sensor_server import (
 class RealSenseConfig:
     """Configuration for the Intel RealSense camera."""
 
-    color_image_dim: Tuple[int, int] = (640, 480)  # (width, height)
+    color_image_dim: Tuple[int, int] = (1280, 720)  # (width, height) — capture resolution
+    output_image_dim: Tuple[int, int] = (640, 360)  # (width, height) — downsample target
     fps: int = 30
     enable_color: bool = True
     enable_depth: bool = False
@@ -88,7 +89,11 @@ class RealSenseSensor(Sensor, SensorServer):
                 print(f"[ERROR] RealSense no color frame for {self.mount_position}")
                 return None
             bgr = np.asanyarray(color_frame.get_data())
-            images[self.mount_position] = bgr[..., ::-1]  # BGR to RGB
+            rgb = bgr[..., ::-1]  # BGR to RGB
+            if self.config.output_image_dim != self.config.color_image_dim:
+                w, h = self.config.output_image_dim
+                rgb = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
+            images[self.mount_position] = rgb
             timestamps[self.mount_position] = capture_time
 
         if self.config.enable_depth:
@@ -129,7 +134,7 @@ class RealSenseSensor(Sensor, SensorServer):
             if frame is None:
                 continue
             msg = self.serialize(frame)
-            self.send_message({self.mount_position: msg})
+            self.send_message(msg)
 
     def __del__(self):
         self.close()
