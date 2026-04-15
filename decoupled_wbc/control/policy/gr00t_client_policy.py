@@ -14,6 +14,7 @@ from decoupled_wbc.control.base.policy import Policy
 from decoupled_wbc.control.main.constants import (
     DEFAULT_BASE_HEIGHT,
     DEFAULT_NAV_CMD,
+    STATE_TOPIC_NAME,
 )
 from decoupled_wbc.control.robot_model.robot_model import RobotModel
 from gr00t.policy.server_client import PolicyClient
@@ -33,6 +34,8 @@ STATE_KEYS = [
 # Action keys the VLA returns. All are shape (B=1, T=horizon, D).
 ACTION_UPPER_BODY_KEYS = ["left_arm", "right_arm", "left_hand", "right_hand", "waist"]
 VIDEO_KEY = "ego_view"
+# MuJoCo sim image publisher uses MJ camera ids as dict keys (see BottleEnv / DefaultEnv).
+VIDEO_KEY_FALLBACKS = ("ego_view", "egoview", "global_view")
 LANGUAGE_KEY = "annotation.human.task_description"
 
 
@@ -55,6 +58,7 @@ class Gr00tClientPolicy(Policy):
         refresh_every: Re-query the server after this many dispatched steps even
             if the chunk isn't exhausted. ``None`` means "only when exhausted".
         dt: Nominal control period, used for timestamp targets in the goal dict.
+        camera_endpoint: ``host:port`` string for logs (composed camera ZMQ PUB).
     """
 
     is_active = True
@@ -68,12 +72,15 @@ class Gr00tClientPolicy(Policy):
         server_port: int = 5555,
         refresh_every: Optional[int] = None,
         dt: float = 1.0 / 20.0,
+        camera_endpoint: Optional[str] = None,
     ):
         self.robot_model = robot_model
         self.camera = camera
         self.task_prompt = task_prompt
         self.dt = dt
         self.refresh_every = refresh_every
+        self._server_endpoint = f"{server_host}:{server_port}"
+        self._camera_endpoint = camera_endpoint or "camera_host:camera_port"
 
         self.client = PolicyClient(host=server_host, port=server_port, strict=False)
 
@@ -114,6 +121,12 @@ class Gr00tClientPolicy(Policy):
         self._cursor = 0
         self._steps_since_refresh = 0
 
+        self._logged_proprio_wait = False
+        self._logged_proprio_ok = False
+        self._logged_camera_block = False
+        self._logged_first_ego_view = False
+        self._chunk_request_seq = 0
+
     # --- Policy interface ------------------------------------------------- #
 
     def set_observation(self, observation: dict):
@@ -123,6 +136,13 @@ class Gr00tClientPolicy(Policy):
         q = observation.get("q")
         if q is not None:
             self._latest_q = np.asarray(q, dtype=np.float32)
+            if not self._logged_proprio_ok:
+                print(
+                    "[gr00t_client] proprio received (q); will build VLA observations "
+                    f"(camera tcp://{self._camera_endpoint}, then server "
+                    f"tcp://{self._server_endpoint})."
+                )
+                self._logged_proprio_ok = True
 
     def reset(self):
         self._chunk = None
@@ -136,7 +156,13 @@ class Gr00tClientPolicy(Policy):
     def get_action(self, time: Optional[float] = None) -> dict:
         """Return the next control-goal dict for the decoupled WBC."""
         if self._latest_q is None:
-            # Safe default while proprio is still warming up.
+            if not self._logged_proprio_wait:
+                print(
+                    f"[gr00t_client] waiting for proprio: no q yet (subscribe to "
+                    f"'{STATE_TOPIC_NAME}', e.g. from run_g1_control_loop). "
+                    "VLA get_action is not called until q arrives."
+                )
+                self._logged_proprio_wait = True
             return self._safe_goal(time)
 
         if self._chunk is None or self._cursor >= self._chunk_len() or self._should_refresh():
@@ -163,16 +189,34 @@ class Gr00tClientPolicy(Policy):
         }
 
     def _build_observation(self) -> dict:
-        # Image. camera.read() returns None when no new frame has arrived since
-        # the last call; fall back to the most recent cached frame so a slow
-        # camera doesn't stall the chunk refresh.
+        # Image. ComposedCameraClientSensor uses blocking ZMQ recv; first frame
+        # can wait indefinitely if no publisher is running.
+        if not self._logged_camera_block:
+            print(
+                f"[gr00t_client] blocking on camera.read() until a ZMQ frame arrives "
+                f"from tcp://{self._camera_endpoint} "
+                f"(need images with one of {list(VIDEO_KEY_FALLBACKS)})…"
+            )
+            self._logged_camera_block = True
         img_msg = self.camera.read()
-        if img_msg is not None and VIDEO_KEY in img_msg.get("images", {}):
-            self._latest_img = img_msg["images"][VIDEO_KEY]
+        if img_msg is not None:
+            images = img_msg.get("images", {})
+            for k in VIDEO_KEY_FALLBACKS:
+                if k in images:
+                    self._latest_img = images[k]
+                    if not self._logged_first_ego_view:
+                        print(
+                            f"[gr00t_client] first video frame received from camera "
+                            f"(images['{k}'] → VLA video key '{VIDEO_KEY}')."
+                        )
+                        self._logged_first_ego_view = True
+                    break
         if self._latest_img is None:
             raise RuntimeError(
-                f"No frame with key '{VIDEO_KEY}' has arrived from the camera yet. "
-                "Make sure the camera server is running and publishing this key."
+                f"No frame with any of keys {list(VIDEO_KEY_FALLBACKS)} in images yet. "
+                "For sim, run run_sim_loop.py with --enable-image-publish and "
+                "--enable-offscreen; use env pnp_bottle (egoview) or default/scene_29dof "
+                "(global_view). Cube/box MuJoCo envs ship no render cameras."
             )
         img = self._latest_img  # (H, W, 3) uint8
         assert img.dtype == np.uint8 and img.ndim == 3 and img.shape[-1] == 3, (
@@ -203,6 +247,12 @@ class Gr00tClientPolicy(Policy):
 
     def _refresh_chunk(self):
         obs = self._build_observation()
+        self._chunk_request_seq += 1
+        print(
+            f"[gr00t_client] chunk request #{self._chunk_request_seq}: "
+            f"calling PolicyClient.get_action → tcp://{self._server_endpoint} "
+            "(blocked until server returns)…"
+        )
         t0 = time_module.monotonic()
         action, _info = self.client.get_action(obs)
         latency = time_module.monotonic() - t0

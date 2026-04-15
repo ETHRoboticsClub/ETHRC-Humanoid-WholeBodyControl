@@ -97,6 +97,7 @@ def main(config: VLAPolicyConfig):
         server_port=config.server_port,
         refresh_every=config.refresh_every,
         dt=1.0 / config.control_frequency,
+        camera_endpoint=f"{config.camera_host}:{config.camera_port}",
     )
 
     # Health check the server before entering the hot loop.
@@ -108,11 +109,17 @@ def main(config: VLAPolicyConfig):
         f"[vla_loop] connected to VLA server {config.server_host}:{config.server_port}, "
         f"task='{config.task_prompt}'"
     )
+    print(
+        f"[vla_loop] diagnostics: proprio topic '{STATE_TOPIC_NAME}', "
+        f"camera ZMQ tcp://{config.camera_host}:{config.camera_port} "
+        f"(see [gr00t_client] lines if something blocks)."
+    )
 
     control_publisher = ROSMsgPublisher(CONTROL_GOAL_TOPIC)
     rate = node.create_rate(config.control_frequency)
     telemetry = Telemetry(window_size=100)
     iteration = 0
+    logged_state_missing_q = False
 
     try:
         while rclpy.ok():
@@ -122,7 +129,15 @@ def main(config: VLAPolicyConfig):
                 # Pull latest proprio into the policy.
                 msg = state_sub.get_msg()
                 if msg is not None:
-                    policy.set_observation({"q": msg["q"]})
+                    if "q" not in msg:
+                        if not logged_state_missing_q:
+                            print(
+                                f"[vla_loop] state message on '{STATE_TOPIC_NAME}' has no "
+                                "'q' key; cannot feed VLA until payload matches publisher."
+                            )
+                            logged_state_missing_q = True
+                    else:
+                        policy.set_observation({"q": msg["q"]})
 
                 # Compute + publish the next goal.
                 with telemetry.timer("get_action"):
