@@ -126,5 +126,6 @@ RUN echo "source ${HOME_DIR}/venv/bin/activate" >> ${HOME_DIR}/.bashrc && \
     echo "export ROS_LOCALHOST_ONLY=1" >> ${HOME_DIR}/.bashrc && \
     echo "export PYTHONPATH=${HOME_DIR}/Projects/${WORKTREE_NAME}:\${PYTHONPATH}" >> ${HOME_DIR}/.bashrc
 
+
 # Default command (can be overridden at runtime)
 CMD ["/bin/bash"]

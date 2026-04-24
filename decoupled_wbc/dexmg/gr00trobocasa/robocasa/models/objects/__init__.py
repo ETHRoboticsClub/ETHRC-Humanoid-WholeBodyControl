@@ -1,5 +1,6 @@
 from robosuite.models.objects import *
 from robosuite.utils import *
+from robocasa.models.objects.objects import MujocoXMLObjectRobocasa # newly added. 
 
 from .xml_objects import (
     CoffeeMachinePodObject,

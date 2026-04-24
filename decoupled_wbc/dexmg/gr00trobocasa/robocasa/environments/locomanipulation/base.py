@@ -17,6 +17,8 @@ from robosuite.utils.observables import Observable, sensor
 import robocasa
 from robocasa.models.objects.objects import MJCFObject
 from robocasa.models.scenes import GroundArena
+from robocasa.models.scenes import KitchenArena # newly added.
+
 import robocasa.utils.camera_utils as CamUtils
 from robocasa.utils.dexmg_utils import DexMGConfigHelper
 from robocasa.utils.object_utils import check_obj_upright
@@ -25,7 +27,7 @@ from robocasa.utils.visuals_utls import Gradient, randomize_materials_rgba
 REGISTERED_LOCOMANIPULATION_ENVS = {}
 
 
-def register_locomanipulation_env(target_class):
+def register_locomanipulation_env(target_class): # here the registration of the class is done 
     REGISTERED_LOCOMANIPULATION_ENVS[target_class.__name__] = target_class
 
 
@@ -227,7 +229,7 @@ class LocoManipulationEnv(ManipulationEnv, metaclass=LocoManipulationEnvMeta):
         Adds new tabletop-relevant cameras to the environment. Will randomize cameras if specified.
         """
 
-        self._cam_configs = deepcopy(CamUtils.CAM_CONFIGS)
+        self._cam_configs = deepcopy(CamUtils.CAM_CONFIGS["DEFAULT"])
 
         for robot in self.robots:
             if hasattr(robot.robot_model, "get_camera_configs"):
@@ -235,6 +237,7 @@ class LocoManipulationEnv(ManipulationEnv, metaclass=LocoManipulationEnvMeta):
 
         for cam_name, cam_cfg in self._cam_configs.items():
             if cam_cfg.get("parent_body", None) is not None:
+                print("continuing cam_name ##############################", cam_name)
                 continue
 
             self.mujoco_arena.set_camera(
@@ -494,6 +497,7 @@ class LocoManipulationEnv(ManipulationEnv, metaclass=LocoManipulationEnvMeta):
 
     def get_state(self):
         return {"states": self.sim.get_state().flatten()}
+
 
 
 class GroundOnly(LocoManipulationEnv):
@@ -783,6 +787,215 @@ class PnPBottle(LocoManipulationEnv, DexMGConfigHelper):
             apply_noise_during_interpolation=False,
         )
         return task.to_dict()
+
+
+from ..kitchen.kitchen import Kitchen as _Kitchen
+
+
+class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
+    """
+    Pick-and-place bottle environment built on top of KitchenArena.
+
+    Inherits fully from Kitchen so the arena (counters, cabinets, floor, walls,
+    textures, fixtures, cameras) is constructed correctly.  This class only adds:
+      - A single graspable PrimitiveBottle placed on a counter.
+      - Minimal success checking and task config.
+
+    All Kitchen constructor kwargs (robots, layout_ids, style_ids, etc.) are
+    passed through unchanged.
+    """
+
+    DEFAULT_BOTTLE_POS: np.ndarray = np.array([0.0, 0.0, 0.93])  # counter-top height
+    BOTTLE_POS_RANGE_X = (-0.08, 0.08)
+    BOTTLE_POS_RANGE_Y = (-0.08, 0.08)
+
+    def __init__(self, *args, **kwargs):
+        # self.objects is also used by Kitchen._create_objects; we initialise it
+        # early so that our _load_model override can safely extend it.
+        self._bottle_objects: dict = {}
+        super().__init__(*args, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Model loading
+    # ------------------------------------------------------------------
+
+    def _load_model(self):
+        """
+        Delegates fully to Kitchen._load_model (which builds the KitchenArena,
+        places all fixtures, etc.), then injects the bottle into the already-
+        constructed model.
+        """
+        super()._load_model()          # builds self.model, self.fixtures, etc.
+        self._inject_robot_cameras()
+        self._bottle = self._create_bottle()
+
+    def _inject_robot_cameras(self):
+        """Add robot-mounted cameras (e.g. robot0_oak_egoview) to the arena.
+
+        Kitchen.set_cameras() only reads the static CAM_CONFIGS dict and misses
+        G1-specific cameras declared on the robot model itself.  This mirrors
+        LocoManipulationEnv.set_cameras() so every camera from
+        robot_model.get_camera_configs() is registered in the MuJoCo model.
+        """
+        from copy import deepcopy
+        import robocasa.utils.camera_utils as CamUtils
+
+        cam_configs = deepcopy(CamUtils.CAM_CONFIGS["DEFAULT"])
+        for robot in self.robots:
+            if hasattr(robot.robot_model, "get_camera_configs"):
+                cam_configs.update(robot.robot_model.get_camera_configs())
+
+        # Propagate robot-model-specific parent_body values into self._cam_configs so
+        # that Kitchen.edit_model_xml injects cameras into the correct bodies.
+        # Without this, _cam_configs retains PandaOmron defaults (mobilebase0_support)
+        # which don't exist in G1, causing those cameras to be skipped during
+        # edit_model_xml and then failing sensor validation in _setup_observables.
+        self._cam_configs.update(cam_configs)
+
+        for cam_name, cam_cfg in cam_configs.items():
+            if cam_cfg.get("parent_body", None) is not None:
+                continue
+            self.mujoco_arena.set_camera(
+                camera_name=cam_name,
+                pos=cam_cfg["pos"],
+                quat=cam_cfg["quat"],
+                camera_attribs=cam_cfg.get("camera_attribs", None),
+            )
+
+    def _get_obj_cfgs(self):
+        """
+        We manage our own bottle object outside the Kitchen object-cfg system,
+        so return an empty list here to suppress Kitchen's default object creation.
+        """
+        return []
+
+    # ------------------------------------------------------------------
+    # Bottle helpers
+    # ------------------------------------------------------------------
+
+    def _create_bottle(
+        self, name: str = "bottle", rgb: Optional[list[float]] = None
+    ) -> "PrimitiveBottle":
+        """Injects a PrimitiveBottle into self.model after the arena is built."""
+        bottle = PrimitiveBottle(name=name, radius=0.03, half_height=0.075, rgb=rgb)
+        self.model.asset.extend(bottle.assets)
+        self.model.worldbody.append(bottle.body)
+        # Register it so _setup_references can find it
+        self._bottle_objects[name] = {"name": f"{name}_body"}
+        return bottle
+
+    # ------------------------------------------------------------------
+    # References & reset
+    # ------------------------------------------------------------------
+
+    def _setup_references(self):
+        super()._setup_references()
+        # Build body-id lookup for the bottle
+        for name, model in self._bottle_objects.items():
+            self.obj_body_id[name] = self.sim.model.body_name2id(model["name"])
+
+    def _reset_internal(self):
+        """
+        Calls Kitchen's reset (places fixtures, spawns robot) then places the bottle.
+        """
+        super()._reset_internal()
+
+        # Kitchen._reset_internal has the init_robot_base_pos assignment commented out,
+        # but Kitchen.get_ep_meta() still reads it. Always sync from anchor.
+        self.init_robot_base_pos = self.init_robot_base_pos_anchor
+        self.init_robot_base_ori = self.init_robot_base_ori_anchor
+
+        # Kitchen._setup_model moves the robot out-of-scene to [10, 10, z] so fixture
+        # placement runs without collisions. EnvUtils.set_robot_to_position is commented
+        # out upstream, so reposition here using the same freejoint approach as
+        # RobotPoseRandomizer.set_pose (see base.py:124-126).
+        base_joint = f"{self.robots[0].robot_model.naming_prefix}base"
+        if base_joint in self.sim.model.joint_names:
+            import mujoco as _mujoco
+            z = LocoManipulationEnv.ROBOT_POS_OFFSETS.get(
+                self.robots[0].robot_model.__class__.__name__, [0, 0, 0.793]
+            )[2]
+            pos = self.init_robot_base_pos_anchor
+            yaw = self.init_robot_base_ori_anchor[2]
+            quat = np.zeros(4, dtype=float)
+            _mujoco.mju_euler2Quat(quat, np.array([0.0, 0.0, yaw]), "xyz")
+            self.sim.data.set_joint_qpos(
+                base_joint, np.concatenate([[pos[0], pos[1], z], quat])
+            )
+            self.sim.forward()
+
+        if not self.deterministic_reset:
+            self._randomize_bottle_placement()
+
+    def _randomize_bottle_placement(
+        self, name: str = "bottle", base_pos: Optional[np.ndarray] = None
+    ):
+        """Jitters the bottle position within BOTTLE_POS_RANGE_X/Y of base_pos."""
+        bottle_joint = f"{name}_joint"
+        base_pos = self.DEFAULT_BOTTLE_POS if base_pos is None else base_pos
+
+        random_x = self.rng.uniform(*self.BOTTLE_POS_RANGE_X)
+        random_y = self.rng.uniform(*self.BOTTLE_POS_RANGE_Y)
+        new_pos = base_pos + np.array([random_x, random_y, 0.0])
+
+        current_qpos = self.sim.data.get_joint_qpos(bottle_joint)
+        new_qpos = current_qpos.copy()
+        new_qpos[:3] = new_pos
+        self.sim.data.set_joint_qpos(bottle_joint, new_qpos)
+
+    # ------------------------------------------------------------------
+    # Task interface
+    # ------------------------------------------------------------------
+
+    def _check_success(self):
+        check_grasp = self._check_grasp(
+            self.robots[0].gripper["right"], self._bottle.contact_geoms
+        )
+        bottle_z = self.sim.data.body_xpos[self.obj_body_id["bottle"]][2]
+        return check_grasp and bottle_z > self.DEFAULT_BOTTLE_POS[2] + 0.2
+
+    def get_object(self):
+        return {
+            name: dict(obj_name=model["name"], obj_type="body")
+            for name, model in self._bottle_objects.items()
+        }
+
+    def get_subtask_term_signals(self):
+        signals = {}
+        signals["grasp_bottle"] = int(
+            self._check_grasp(self.robots[0].gripper["right"], self._bottle.contact_geoms)
+        )
+        return signals
+
+    @staticmethod
+    def task_config():
+        task = DexMGConfigHelper.AttrDict()
+        task.task_spec_0.subtask_1 = dict(
+            object_ref="bottle",
+            subtask_term_signal="grasp_bottle",
+            subtask_term_offset_range=None,
+            selection_strategy="random",
+            selection_strategy_kwargs=None,
+            action_noise=0.05,
+            num_interpolation_steps=5,
+            num_fixed_steps=0,
+            apply_noise_during_interpolation=False,
+        )
+        task.task_spec_1.subtask_1 = dict(
+            object_ref=None,
+            subtask_term_signal=None,
+            subtask_term_offset_range=None,
+            selection_strategy="random",
+            selection_strategy_kwargs=None,
+            action_noise=0.05,
+            num_interpolation_steps=5,
+            num_fixed_steps=0,
+            apply_noise_during_interpolation=False,
+        )
+        return task.to_dict()
+
+
+register_locomanipulation_env(PnPBottleRomain)
 
 
 def create_shelf(pos: list[float], euler: list[float]) -> MJCFObject:

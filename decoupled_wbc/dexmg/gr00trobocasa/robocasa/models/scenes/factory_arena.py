@@ -1,4 +1,4 @@
-from robosuite.models.arenas import Arena
+from robosuite.models.arenas import Arena # in robosuite. 
 from robosuite.utils.mjcf_utils import xml_path_completion
 import robocasa
 

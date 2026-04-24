@@ -102,6 +102,44 @@ def get_rel_transform(fixture_A, fixture_B):
     return T_AB[:3, 3], T_AB[:3, :3]
 
 
+def project_point_to_segment(point, seg_start, seg_end):
+    """
+    Projects a point onto a line segment, and clamps it to the segment bounds.
+
+    Args:
+        point (np.ndarray): The point to project, shape (2,) or (3,)
+        seg_start (np.ndarray): Start point of the segment, same shape as point
+        seg_end (np.ndarray): End point of the segment, same shape as point
+
+    Returns:
+        np.ndarray: The closest point on the segment to the input point
+        float: The distance to the segment
+
+    From ChatGPT
+    """
+    # Convert to numpy arrays in case they aren't already
+    point = np.array(point)
+    seg_start = np.array(seg_start)
+    seg_end = np.array(seg_end)
+
+    seg_vec = seg_end - seg_start
+    seg_len_sq = np.dot(seg_vec, seg_vec)
+
+    if seg_len_sq == 0.0:
+        # Segment is a point
+        return seg_start, 0.0
+
+    # Compute t: projection factor along the segment
+    t = np.dot(point - seg_start, seg_vec) / seg_len_sq
+    t_clamped = np.clip(t, 0.0, 1.0)
+
+    # Compute the closest point
+    closest_point = seg_start + t_clamped * seg_vec
+    dist = np.linalg.norm(point - closest_point)
+
+    return closest_point, dist
+
+
 def compute_rel_transform(A_pos, A_mat, B_pos, B_mat):
     """
     Gets B's position and rotation relative to A's frame

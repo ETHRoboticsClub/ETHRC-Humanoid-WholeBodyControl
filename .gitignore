@@ -216,3 +216,10 @@ models/
 # Downloaded from HuggingFace (hf download)
 sample_data/
 sonic_release/
+
+
+# download from robocasa : 
+models/assets/textures/
+models/assets/generative_textures/
+models/assets/fixtures/
+models/assets/objects/

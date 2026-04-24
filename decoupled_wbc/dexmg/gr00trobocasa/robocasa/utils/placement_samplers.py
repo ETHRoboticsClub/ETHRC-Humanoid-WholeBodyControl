@@ -197,6 +197,7 @@ class UniformRandomSampler(ObjectPositionSampler):
         rng=None,
         side="all",
         num_attempts=5000,
+        ensure_valid_auxiliary_placement = None, 
     ):
         """Uniformly sample the position of the object.
 
