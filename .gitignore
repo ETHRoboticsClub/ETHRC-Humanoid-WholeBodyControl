@@ -210,16 +210,13 @@ data/motion_lib_bones_seed
 logs_rl/
 logs_eval/
 
-# Model checkpoints directory
-models/
-
 # Downloaded from HuggingFace (hf download)
 sample_data/
 sonic_release/
 
 
 # download from robocasa : 
-models/assets/textures/
-models/assets/generative_textures/
-models/assets/fixtures/
-models/assets/objects/
+# decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/textures/
+# decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/fixtures/
+# decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/objects/
+# decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/generative_textures/
