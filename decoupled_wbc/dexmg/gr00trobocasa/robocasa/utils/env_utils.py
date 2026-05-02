@@ -1216,6 +1216,7 @@ def init_robot_base_pose(env):
         ref_fixture = env.get_fixture(env.init_robot_base_ref)
     else:
         fixtures = list(env.fixtures.values())
+        print("list of fixure values: ", fixtures)
         valid_ref_fixture_classes = [
             "CoffeeMachine",
             "Toaster",

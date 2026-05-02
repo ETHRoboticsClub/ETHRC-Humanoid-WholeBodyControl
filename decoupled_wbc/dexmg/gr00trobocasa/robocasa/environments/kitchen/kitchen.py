@@ -422,6 +422,11 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
         self.obj_registries = obj_registries
         self.obj_instance_split = obj_instance_split
 
+        print("layout_and_style_ids : ", layout_and_style_ids)
+        print("layout_ids : ", layout_ids)
+        print("style_ids : ", style_ids)
+        print("#################################################")
+
         if layout_and_style_ids is not None:
             assert (
                 layout_ids is None and style_ids is None

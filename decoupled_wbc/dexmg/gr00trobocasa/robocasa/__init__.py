@@ -13,6 +13,7 @@ from robocasa.environments.locomanipulation.base import (
     PickBottles,
     NavPickBottles,
     PnPBottlesTableToTable,
+    PnPBottleRomain,
 )
 from robocasa.environments.locomanipulation.locomanip_basic import (
     LMPickBottle,

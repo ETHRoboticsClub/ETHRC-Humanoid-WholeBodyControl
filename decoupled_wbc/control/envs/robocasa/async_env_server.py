@@ -260,7 +260,7 @@ class RoboCasaEnvServer:
                 if (end_time - t_start) > ((110.0 / self.control_freq)):  # for tolerance
                     print(
                         f"Warning: Sim runs at "
-                        "{100.0/(end_time - t_start) * (self.sim_freq / self.control_freq):.1f}Hz, "
+                        f"{100.0/(end_time - t_start) * (self.sim_freq / self.control_freq):.1f}Hz, "
                         f"but should run at {self.sim_freq:.1f}Hz"
                     )
                 t_start = end_time
@@ -271,7 +271,7 @@ class RoboCasaEnvServer:
                     self.base_env.reset_obj_pos()
 
             self.control_rate.sleep()
-
+    
     def get_privileged_obs(self):
         """Get privileged observation. Should be implemented by subclasses."""
         obs = {}

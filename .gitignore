@@ -216,6 +216,8 @@ sonic_release/
 
 
 # download from robocasa : 
+models/ 
+
 # decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/textures/
 # decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/fixtures/
 # decoupled_wbc/dexmg/gr00trobocasa/robocasa/models/assets/objects/

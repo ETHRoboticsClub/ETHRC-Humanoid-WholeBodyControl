@@ -809,10 +809,40 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
     BOTTLE_POS_RANGE_X = (-0.08, 0.08)
     BOTTLE_POS_RANGE_Y = (-0.08, 0.08)
 
+
+    """
+
+    layout_id — the physical arrangement of the kitchen: where the counters, 
+    island, sink, stove, cabinets, and fridge are placed. There are 
+    60 layouts (integers 1–60). Layouts 1–10 are the test set, 11–60 
+    are training.
+
+    style_id — purely visual: textures, colors, and materials 
+    of the surfaces (cabinets, walls, floor, countertops). 
+    There are ~20 styles. The physical structure doesn't 
+    change at all.
+
+    layout 2 is nice, it has sink in the middle of the room. 
+    layout 12 has chairs so nice. 
+    layout 13 is nice, chairs far from the starting point and only one pair of chairs. 
+    14 also nice. 
+    16 also nice. 
+    
+    Chosen layout : 12 : allow multiple experiments and has oven chairs fridge and a 
+    counter in the middle so it complexify the observatibility of the scene. 
+
+    """
+
+    CARDBOX_HALF_HEIGHT: float = 0.12  # cardbox_a1 origin is at its base; this is its approx centre height
+
     def __init__(self, *args, **kwargs):
-        # self.objects is also used by Kitchen._create_objects; we initialise it
-        # early so that our _load_model override can safely extend it.
+        kwargs.setdefault("layout_ids", [12])  # layout 7 has a good counter in front of the robot for bottle placement
+        kwargs.setdefault("style_ids", [3])
+        kwargs.setdefault("init_robot_base_ref", "stove")
         self._bottle_objects: dict = {}
+        self._cardbox_objects: dict = {}
+        self._cardbox_contact_geoms: list = []
+        self._cardbox_joint_name: str = "cardbox_joint"
         super().__init__(*args, **kwargs)
 
     # ------------------------------------------------------------------
@@ -828,6 +858,8 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
         super()._load_model()          # builds self.model, self.fixtures, etc.
         self._inject_robot_cameras()
         self._bottle = self._create_bottle()
+        self._create_cardbox()
+
 
     def _inject_robot_cameras(self):
         """Add robot-mounted cameras (e.g. robot0_oak_egoview) to the arena.
@@ -884,6 +916,74 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
         self._bottle_objects[name] = {"name": f"{name}_body"}
         return bottle
 
+    def _create_cardbox(self, name: str = "cardbox") -> None:
+        """
+        Parse cardbox_a1/model.xml and inject it into self.model as a graspable
+        free body.  Asset file paths are made absolute so MuJoCo can resolve
+        them.  The class-based geom defaults from the XML are inlined explicitly
+        to avoid collisions with the compiled model's default classes.
+        """
+        import robocasa.models
+
+        xml_path = xml_path_completion(
+            "objects/omniverse/locomanip/cardbox_b1/model.xml",
+            root=robocasa.models.assets_root,
+        )
+        asset_dir = os.path.dirname(xml_path)
+
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+
+        # Make asset file paths absolute so MuJoCo finds them at runtime
+        asset_elem = root.find("asset")
+        for elem in list(asset_elem):
+            old_path = elem.get("file")
+            if old_path is not None:
+                elem.set("file", os.path.join(asset_dir, old_path))
+
+        # Body structure: <body><body name="object">geoms…</body><sites…></body>
+        worldbody = root.find("worldbody")
+        outer_body = worldbody.find("body")
+        inner_body = outer_body.find("body")  # named "object"
+
+        # Inline class defaults into each geom and remove the class attribute
+        # so we don't depend on the compiled model having those class names.
+        contact_geom_names: list = []
+        coll_idx = 0
+        for geom in inner_body.findall("geom"):
+            geom_class = geom.get("class", "")
+            if geom_class == "visual":
+                geom.set("type", "mesh")  # type="mesh" was supplied by class="visual" default — must be explicit now
+                geom.set("group", "1")
+                geom.set("contype", "0")
+                geom.set("conaffinity", "0")
+                geom.set("density", "100")
+            elif geom_class == "collision":
+                geom_name = f"{name}_col_{coll_idx}"
+                geom.set("name", geom_name)
+                geom.set("group", "0")
+                geom.set("density", "100")
+                geom.set("solimp", "0.95 0.98 0.001")
+                geom.set("solref", "0.004 1")
+                contact_geom_names.append(geom_name)
+                coll_idx += 1
+            geom.attrib.pop("class", None)
+
+        # Rename outer body and insert a free joint so the box is graspable
+        outer_body.set("name", f"{name}_body")
+        outer_body.set("pos", "0 0 0.12")  # initial above-floor position; overwritten at reset
+        free_joint = ET.Element("joint", name=f"{name}_joint", type="free", damping="0.0005")
+        outer_body.insert(0, free_joint)
+
+        # Inject assets and body into the compiled model
+        for elem in list(asset_elem):
+            self.model.asset.append(elem)
+        self.model.worldbody.append(outer_body)
+
+        self._cardbox_objects = {name: {"name": f"{name}_body"}}
+        self._cardbox_contact_geoms = contact_geom_names
+        self._cardbox_joint_name = f"{name}_joint"
+
     # ------------------------------------------------------------------
     # References & reset
     # ------------------------------------------------------------------
@@ -892,6 +992,9 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
         super()._setup_references()
         # Build body-id lookup for the bottle
         for name, model in self._bottle_objects.items():
+            self.obj_body_id[name] = self.sim.model.body_name2id(model["name"])
+        # Build body-id lookup for the cardbox
+        for name, model in self._cardbox_objects.items():
             self.obj_body_id[name] = self.sim.model.body_name2id(model["name"])
 
     def _reset_internal(self):
@@ -916,7 +1019,7 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
                 self.robots[0].robot_model.__class__.__name__, [0, 0, 0.793]
             )[2]
             pos = self.init_robot_base_pos_anchor
-            yaw = self.init_robot_base_ori_anchor[2]
+            yaw = self.init_robot_base_ori_anchor[2] + np.pi
             quat = np.zeros(4, dtype=float)
             _mujoco.mju_euler2Quat(quat, np.array([0.0, 0.0, yaw]), "xyz")
             self.sim.data.set_joint_qpos(
@@ -926,6 +1029,23 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
 
         if not self.deterministic_reset:
             self._randomize_bottle_placement()
+
+        self._place_cardbox_in_front_of_fridge()
+
+    # World-space floor position for the cardbox (x, y from robot print, z=floor).
+    CARDBOX_POS: np.ndarray = np.array([2, -3.36, 0.90])
+    CARDBOX_POS_RANGE_X: tuple = (-0.15, 0.15)
+    CARDBOX_POS_RANGE_Y: tuple = (-0.15, 0.15)
+
+    def _place_cardbox_in_front_of_fridge(self, name: str = "cardbox") -> None:
+        """Place the cardbox near CARDBOX_POS with random x/y offset."""
+        offset_x = self.rng.uniform(*self.CARDBOX_POS_RANGE_X)
+        offset_y = self.rng.uniform(*self.CARDBOX_POS_RANGE_Y)
+        pos = self.CARDBOX_POS + np.array([offset_x, offset_y, 0.0])
+        qpos = self.sim.data.get_joint_qpos(self._cardbox_joint_name).copy()
+        qpos[:3] = pos
+        qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0])
+        self.sim.data.set_joint_qpos(self._cardbox_joint_name, qpos)
 
     def _randomize_bottle_placement(
         self, name: str = "bottle", base_pos: Optional[np.ndarray] = None
@@ -942,6 +1062,12 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
         new_qpos = current_qpos.copy()
         new_qpos[:3] = new_pos
         self.sim.data.set_joint_qpos(bottle_joint, new_qpos)
+
+    def _post_action(self, action):
+        ret = super()._post_action(action)
+        base_joint = f"{self.robots[0].robot_model.naming_prefix}base"
+        print("G1 pos:", self.sim.data.get_joint_qpos(base_joint)[:3])
+        return ret
 
     # ------------------------------------------------------------------
     # Task interface
@@ -1869,3 +1995,6 @@ class PnPBottlesTableToTable(PickBottles):
             th = 0.15
             signals[f"{bottle.name}_off_table"] = int(obj_z - target_table_z > th)
         return signals
+
+
+# modif the file. 
