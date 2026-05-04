@@ -17,7 +17,7 @@ from decoupled_wbc.control.main.constants import (
     STATE_TOPIC_NAME,
 )
 from decoupled_wbc.control.robot_model.robot_model import RobotModel
-from gr00t.policy.server_client import PolicyClient
+from decoupled_wbc.control.utils.groot_client import PolicyClient
 
 
 # Must match Isaac-GR00T's pre-registered ``unitree_g1`` modality.
