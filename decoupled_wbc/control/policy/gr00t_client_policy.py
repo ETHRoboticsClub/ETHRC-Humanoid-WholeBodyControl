@@ -131,7 +131,12 @@ class Gr00tClientPolicy(Policy):
         # upper-body pose until the operator presses ``start_key``.
         self._active = False
         self._first_active_tick = False
-        self._first_idle_tick = False
+        # Absolute monotonic deadline for the return-to-home transition.
+        # While ``time_module.monotonic() < self._home_arrival_time``, the
+        # IDLE goal is published with a *fixed* ``target_time`` so the IK
+        # interpolator can smoothly converge over the whole window instead
+        # of being told "snap to home in dt" on every fresh tick.
+        self._home_arrival_time: Optional[float] = None
 
         self._logged_proprio_wait = False
         self._logged_proprio_ok = False
@@ -174,6 +179,9 @@ class Gr00tClientPolicy(Policy):
             return
         self._active = True
         self._first_active_tick = True
+        # Cancel any pending return-to-home; the user has chosen to start
+        # an episode mid-return.
+        self._home_arrival_time = None
         self._chunk = None
         self._cursor = 0
         self._steps_since_refresh = 0
@@ -186,7 +194,7 @@ class Gr00tClientPolicy(Policy):
             return
         self._active = False
         self._first_active_tick = False
-        self._first_idle_tick = True
+        self._home_arrival_time = time_module.monotonic() + self.time_to_home_pose
         self._chunk = None
         self._cursor = 0
         self._steps_since_refresh = 0
@@ -212,12 +220,17 @@ class Gr00tClientPolicy(Policy):
         """Return the next control-goal dict for the decoupled WBC."""
         if not self._active:
             goal = self._safe_goal(time)
-            # On the first IDLE tick after a terminate, stretch target_time
-            # so the IK interpolator returns to the home pose smoothly
-            # rather than yanking it back at the per-tick dt horizon.
-            if self._first_idle_tick:
-                goal["target_time"] = goal["timestamp"] + self.time_to_home_pose
-                self._first_idle_tick = False
+            # While the return-to-home window is still open, every tick
+            # publishes the same fixed deadline. The IK interpolator on the
+            # WBC side reads (current_pose → home_pose) over the remaining
+            # window and produces a smooth, decreasing-velocity trajectory.
+            # Once the deadline passes, fall back to the normal per-tick
+            # ``target_time = now + dt`` (steady hold).
+            if self._home_arrival_time is not None:
+                if goal["timestamp"] < self._home_arrival_time:
+                    goal["target_time"] = self._home_arrival_time
+                else:
+                    self._home_arrival_time = None
             return goal
 
         if self._latest_q is None:
