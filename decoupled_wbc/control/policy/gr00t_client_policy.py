@@ -61,8 +61,6 @@ class Gr00tClientPolicy(Policy):
         camera_endpoint: ``host:port`` string for logs (composed camera ZMQ PUB).
     """
 
-    is_active = True
-
     def __init__(
         self,
         robot_model: RobotModel,
@@ -73,12 +71,18 @@ class Gr00tClientPolicy(Policy):
         refresh_every: Optional[int] = None,
         dt: float = 1.0 / 20.0,
         camera_endpoint: Optional[str] = None,
+        time_to_initial_pose: float = 2.0,
+        start_key: str = "s",
+        terminate_key: str = "t",
     ):
         self.robot_model = robot_model
         self.camera = camera
         self.task_prompt = task_prompt
         self.dt = dt
         self.refresh_every = refresh_every
+        self.time_to_initial_pose = time_to_initial_pose
+        self.start_key = start_key
+        self.terminate_key = terminate_key
         self._server_endpoint = f"{server_host}:{server_port}"
         self._camera_endpoint = camera_endpoint or "camera_host:camera_port"
 
@@ -121,6 +125,11 @@ class Gr00tClientPolicy(Policy):
         self._cursor = 0
         self._steps_since_refresh = 0
 
+        # Episode lifecycle. Defaults to IDLE — the policy holds the initial
+        # upper-body pose until the operator presses ``start_key``.
+        self._active = False
+        self._first_active_tick = False
+
         self._logged_proprio_wait = False
         self._logged_proprio_ok = False
         self._logged_camera_block = False
@@ -153,8 +162,50 @@ class Gr00tClientPolicy(Policy):
         except Exception as e:  # noqa: BLE001 — non-fatal
             print(f"[gr00t_client] reset() failed: {e}")
 
+    # --- Episode lifecycle ----------------------------------------------- #
+
+    def start_episode(self):
+        """Transition IDLE → ACTIVE. Clears any leftover chunk state."""
+        if self._active:
+            print("[gr00t_client] start_episode ignored — already active")
+            return
+        self._active = True
+        self._first_active_tick = True
+        self._chunk = None
+        self._cursor = 0
+        self._steps_since_refresh = 0
+        print("[gr00t_client] episode started")
+
+    def end_episode(self):
+        """Transition ACTIVE → IDLE and drop the in-flight chunk."""
+        if not self._active:
+            print("[gr00t_client] end_episode ignored — already idle")
+            return
+        self._active = False
+        self._first_active_tick = False
+        self._chunk = None
+        self._cursor = 0
+        self._steps_since_refresh = 0
+        try:
+            self.client.reset()
+        except Exception as e:  # noqa: BLE001 — non-fatal
+            print(f"[gr00t_client] client.reset() during end_episode failed: {e}")
+        print("[gr00t_client] episode terminated → returning to home pose")
+
+    def handle_keyboard_button(self, key: str):
+        """Drop-in hook for ``KeyboardDispatcher.register``."""
+        if key == self.start_key:
+            self.start_episode()
+        elif key == self.terminate_key:
+            self.end_episode()
+
+    # --- Policy interface (cont.) ---------------------------------------- #
+
     def get_action(self, time: Optional[float] = None) -> dict:
         """Return the next control-goal dict for the decoupled WBC."""
+        if not self._active:
+            return self._safe_goal(time)
+
         if self._latest_q is None:
             if not self._logged_proprio_wait:
                 print(
@@ -168,7 +219,15 @@ class Gr00tClientPolicy(Policy):
         if self._chunk is None or self._cursor >= self._chunk_len() or self._should_refresh():
             self._refresh_chunk()
 
-        return self._build_goal_from_cursor(time)
+        goal = self._build_goal_from_cursor(time)
+
+        # First ACTIVE goal of the episode: extend target_time so the IK
+        # interpolator has time to settle out of the home pose.
+        if self._first_active_tick:
+            goal["target_time"] = goal["timestamp"] + self.time_to_initial_pose
+            self._first_active_tick = False
+
+        return goal
 
     # --- internals -------------------------------------------------------- #
 

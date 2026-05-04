@@ -26,6 +26,7 @@ from decoupled_wbc.control.main.constants import (
 from decoupled_wbc.control.policy.gr00t_client_policy import Gr00tClientPolicy
 from decoupled_wbc.control.robot_model.instantiation.g1 import instantiate_g1_robot_model
 from decoupled_wbc.control.sensor.composed_camera import ComposedCameraClientSensor
+from decoupled_wbc.control.utils.keyboard_dispatcher import KeyboardDispatcher
 from decoupled_wbc.control.utils.ros_utils import (
     ROSManager,
     ROSMsgPublisher,
@@ -68,7 +69,15 @@ class VLAPolicyConfig:
     """Mirror the flag used by ``run_g1_control_loop.py``."""
 
     time_to_initial_pose: float = 2.0
-    """Seconds to hold at the initial pose on the first iteration."""
+    """Seconds to extend ``target_time`` on the first ACTIVE tick of an
+    episode so the IK interpolator can settle out of the home pose."""
+
+    start_key: str = "s"
+    """Keyboard key (in this terminal) that transitions IDLE → ACTIVE."""
+
+    terminate_key: str = "t"
+    """Keyboard key (in this terminal) that transitions ACTIVE → IDLE
+    and drives the robot back to the home pose."""
 
 
 def main(config: VLAPolicyConfig):
@@ -98,6 +107,9 @@ def main(config: VLAPolicyConfig):
         refresh_every=config.refresh_every,
         dt=1.0 / config.control_frequency,
         camera_endpoint=f"{config.camera_host}:{config.camera_port}",
+        time_to_initial_pose=config.time_to_initial_pose,
+        start_key=config.start_key,
+        terminate_key=config.terminate_key,
     )
 
     # Health check the server before entering the hot loop.
@@ -114,11 +126,19 @@ def main(config: VLAPolicyConfig):
         f"camera ZMQ tcp://{config.camera_host}:{config.camera_port} "
         f"(see [gr00t_client] lines if something blocks)."
     )
+    print(
+        f"[vla_loop] IDLE — waiting for episode start. "
+        f"press '{config.start_key}' to start an episode, "
+        f"'{config.terminate_key}' to terminate."
+    )
+
+    keyboard_dispatcher = KeyboardDispatcher()
+    keyboard_dispatcher.register(policy)
+    keyboard_dispatcher.start()
 
     control_publisher = ROSMsgPublisher(CONTROL_GOAL_TOPIC)
     rate = node.create_rate(config.control_frequency)
     telemetry = Telemetry(window_size=100)
-    iteration = 0
     logged_state_missing_q = False
 
     try:
@@ -143,21 +163,8 @@ def main(config: VLAPolicyConfig):
                 with telemetry.timer("get_action"):
                     goal = policy.get_action()
 
-                # Extend initial target_time on the first iteration so the
-                # interpolator has time to reach the starting pose.
-                if iteration == 0:
-                    goal["target_time"] = t_start + config.time_to_initial_pose
-
                 with telemetry.timer("publish_goal"):
                     control_publisher.publish(goal)
-
-                if iteration == 0:
-                    print(
-                        f"[vla_loop] holding initial pose for "
-                        f"{config.time_to_initial_pose:.1f}s"
-                    )
-                    time.sleep(config.time_to_initial_pose)
-                iteration += 1
 
                 end_time = time.monotonic()
                 if (end_time - t_start) > (1.0 / config.control_frequency):
@@ -171,6 +178,7 @@ def main(config: VLAPolicyConfig):
 
     finally:
         print("[vla_loop] cleaning up...")
+        keyboard_dispatcher.stop()
         ros_manager.shutdown()
 
 
