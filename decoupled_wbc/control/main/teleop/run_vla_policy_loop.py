@@ -72,6 +72,10 @@ class VLAPolicyConfig:
     """Seconds to extend ``target_time`` on the first ACTIVE tick of an
     episode so the IK interpolator can settle out of the home pose."""
 
+    time_to_home_pose: float = 4.0
+    """Seconds to extend ``target_time`` on the first IDLE tick after
+    terminate so the robot returns to the home pose smoothly."""
+
     start_key: str = "s"
     """Keyboard key (in this terminal) that transitions IDLE → ACTIVE."""
 
@@ -108,6 +112,7 @@ def main(config: VLAPolicyConfig):
         dt=1.0 / config.control_frequency,
         camera_endpoint=f"{config.camera_host}:{config.camera_port}",
         time_to_initial_pose=config.time_to_initial_pose,
+        time_to_home_pose=config.time_to_home_pose,
         start_key=config.start_key,
         terminate_key=config.terminate_key,
     )

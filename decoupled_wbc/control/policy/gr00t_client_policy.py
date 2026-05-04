@@ -72,6 +72,7 @@ class Gr00tClientPolicy(Policy):
         dt: float = 1.0 / 20.0,
         camera_endpoint: Optional[str] = None,
         time_to_initial_pose: float = 2.0,
+        time_to_home_pose: float = 4.0,
         start_key: str = "s",
         terminate_key: str = "t",
     ):
@@ -81,6 +82,7 @@ class Gr00tClientPolicy(Policy):
         self.dt = dt
         self.refresh_every = refresh_every
         self.time_to_initial_pose = time_to_initial_pose
+        self.time_to_home_pose = time_to_home_pose
         self.start_key = start_key
         self.terminate_key = terminate_key
         self._server_endpoint = f"{server_host}:{server_port}"
@@ -129,6 +131,7 @@ class Gr00tClientPolicy(Policy):
         # upper-body pose until the operator presses ``start_key``.
         self._active = False
         self._first_active_tick = False
+        self._first_idle_tick = False
 
         self._logged_proprio_wait = False
         self._logged_proprio_ok = False
@@ -183,6 +186,7 @@ class Gr00tClientPolicy(Policy):
             return
         self._active = False
         self._first_active_tick = False
+        self._first_idle_tick = True
         self._chunk = None
         self._cursor = 0
         self._steps_since_refresh = 0
@@ -190,7 +194,10 @@ class Gr00tClientPolicy(Policy):
             self.client.reset()
         except Exception as e:  # noqa: BLE001 — non-fatal
             print(f"[gr00t_client] client.reset() during end_episode failed: {e}")
-        print("[gr00t_client] episode terminated → returning to home pose")
+        print(
+            f"[gr00t_client] episode terminated → returning to home pose "
+            f"over {self.time_to_home_pose:.1f}s"
+        )
 
     def handle_keyboard_button(self, key: str):
         """Drop-in hook for ``KeyboardDispatcher.register``."""
@@ -204,7 +211,14 @@ class Gr00tClientPolicy(Policy):
     def get_action(self, time: Optional[float] = None) -> dict:
         """Return the next control-goal dict for the decoupled WBC."""
         if not self._active:
-            return self._safe_goal(time)
+            goal = self._safe_goal(time)
+            # On the first IDLE tick after a terminate, stretch target_time
+            # so the IK interpolator returns to the home pose smoothly
+            # rather than yanking it back at the per-tick dt horizon.
+            if self._first_idle_tick:
+                goal["target_time"] = goal["timestamp"] + self.time_to_home_pose
+                self._first_idle_tick = False
+            return goal
 
         if self._latest_q is None:
             if not self._logged_proprio_wait:
