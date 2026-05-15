@@ -294,6 +294,9 @@ class DataExporterConfig(BaseConfig, ComposedCameraClientConfig):
     text_to_speech: bool = True
     """Whether to use text-to-speech for voice feedback."""
 
+    record_wrist_cameras: bool = False
+    """Whether to record left/right wrist camera streams in the dataset."""
+
     add_stereo_camera: bool = True
     """Whether to add stereo camera for data collection. If False, only use a signle ego view camera."""
 
@@ -484,3 +487,6 @@ class DeploymentConfig(BaseConfig, ComposedCameraClientConfig):
 
     add_stereo_camera: bool = True
     """Whether to add stereo camera for data collection."""
+
+    record_wrist_cameras: bool = False
+    """Whether to record left/right wrist camera streams in the dataset."""

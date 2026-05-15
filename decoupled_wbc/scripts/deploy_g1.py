@@ -327,6 +327,9 @@ class G1Deployment:
         if not self.config.add_stereo_camera:
             cmd.extend(["--no-add_stereo_camera"])
 
+        if self.config.record_wrist_cameras:
+            cmd.append("--record-wrist-cameras")
+
         if not self._run_in_tmux("data", cmd, pane_index=1):
             print("ERROR: Data collection failed to start!")
             print("Continuing without data collection...")

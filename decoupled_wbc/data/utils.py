@@ -2,7 +2,11 @@ from decoupled_wbc.control.robot_model.robot_model import RobotModel
 from decoupled_wbc.data.constants import RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH
 
 
-def get_modality_config(robot_model: RobotModel, add_stereo_camera: bool = False) -> dict:
+def get_modality_config(
+    robot_model: RobotModel,
+    add_stereo_camera: bool = False,
+    record_wrist_cameras: bool = False,
+) -> dict:
     """
     Get the modality config for the robot model.
     """
@@ -78,10 +82,22 @@ def get_modality_config(robot_model: RobotModel, add_stereo_camera: bool = False
             }
         )
 
+    if record_wrist_cameras:
+        modality_config["video"].update(
+            {
+                "left_wrist": {"original_key": "observation.images.left_wrist"},
+                "right_wrist": {"original_key": "observation.images.right_wrist"},
+            }
+        )
+
     return modality_config
 
 
-def get_dataset_features(robot_model: RobotModel, add_stereo_camera: bool = False) -> dict:
+def get_dataset_features(
+    robot_model: RobotModel,
+    add_stereo_camera: bool = False,
+    record_wrist_cameras: bool = False,
+) -> dict:
     """
     Get the dataset features for the robot model.
     """
@@ -146,6 +162,22 @@ def get_dataset_features(robot_model: RobotModel, add_stereo_camera: bool = Fals
                     "names": ["height", "width", "channel"],
                 },
                 "observation.images.ego_view_right_mono": {
+                    "dtype": "video",
+                    "shape": [RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH, 3],
+                    "names": ["height", "width", "channel"],
+                },
+            }
+        )
+
+    if record_wrist_cameras:
+        dataset_features.update(
+            {
+                "observation.images.left_wrist": {
+                    "dtype": "video",
+                    "shape": [RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH, 3],
+                    "names": ["height", "width", "channel"],
+                },
+                "observation.images.right_wrist": {
                     "dtype": "video",
                     "shape": [RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH, 3],
                     "names": ["height", "width", "channel"],
