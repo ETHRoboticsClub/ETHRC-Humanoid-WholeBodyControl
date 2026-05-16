@@ -99,6 +99,17 @@ training = [
     "accelerate>=1.3.0",
     "tensorboard",
 ]
+# Rerun-based visualization: pairs run_rerun_viewer.py (PC) with
+# run_rerun_camera_publisher.py (G1 Orin). pyzed is NOT included — it ships
+# with the Stereolabs SDK installer, not pip; the publisher imports it lazily
+# and degrades to wrist-only if absent.
+# Usage: pip install -e "gear_sonic[viz]"
+viz = [
+    "rerun-sdk>=0.23,<0.25",
+    "tyro",
+    "opencv-python",
+    "numpy",
+]
 
 [tool.setuptools.packages.find]
 where = [".."]
