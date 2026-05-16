@@ -31,12 +31,31 @@ Notes:
 """
 
 import argparse
+import os
 import socket
 import sys
 import time
 
 import rerun as rr
 import rerun.blueprint as rrb
+
+
+def _ensure_rerun_bin_on_path() -> None:
+    """`rr.spawn()` shells out to the `rerun` viewer binary that pip installs
+    alongside the rerun_sdk Python package (typically <venv>/bin/rerun). When
+    this script is invoked via an absolute interpreter path (e.g.
+    `.venv_data_collection/bin/python gear_sonic/scripts/run_rerun_viewer.py`)
+    the venv's bin/ is NOT on PATH, so the binary is invisible and rr.spawn()
+    fails with "Failed to find Rerun Viewer executable in PATH".
+
+    Prepend sys.executable's directory before spawning. Idempotent if the
+    user already activated the venv.
+    """
+    bin_dir = os.path.dirname(os.path.abspath(sys.executable))
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    if bin_dir not in parts:
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+        print(f"[listener] prepended {bin_dir} to PATH for rr.spawn", flush=True)
 
 
 def get_local_lan_ips() -> list[str]:
@@ -101,6 +120,7 @@ def main() -> int:
     #    0.0.0.0:<port> for incoming gRPC connections from any publisher on
     #    the LAN, and our Python here is also auto-connected to it so we can
     #    push the blueprint.
+    _ensure_rerun_bin_on_path()
     print(f"[listener] spawning viewer on port {args.port} ...", flush=True)
     rr.spawn(port=args.port)
 
