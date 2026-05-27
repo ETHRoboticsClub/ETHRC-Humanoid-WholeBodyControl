@@ -833,6 +833,10 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
 
     """
 
+    ROBOT_BASE_POS_RANGE_X: tuple = (-0.15, 0.15)
+    ROBOT_BASE_POS_RANGE_Y: tuple = (-0.10, 0.10)
+    ROBOT_BASE_YAW_RANGE: tuple = (-0.15, 0.15)  # radians (~±8.6 deg)
+
     CARDBOX_HALF_HEIGHT: float = 0.12  # cardbox_a1 origin is at its base; this is its approx centre height
 
     def __init__(self, *args, **kwargs):
@@ -1018,8 +1022,15 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
             z = LocoManipulationEnv.ROBOT_POS_OFFSETS.get(
                 self.robots[0].robot_model.__class__.__name__, [0, 0, 0.793]
             )[2]
-            pos = self.init_robot_base_pos_anchor
+            pos = self.init_robot_base_pos_anchor.copy()
             yaw = self.init_robot_base_ori_anchor[2] + np.pi
+            if not self.deterministic_reset:
+                pos = pos + np.array([
+                    self.rng.uniform(*self.ROBOT_BASE_POS_RANGE_X),
+                    self.rng.uniform(*self.ROBOT_BASE_POS_RANGE_Y),
+                    0.0,
+                ])
+                yaw += self.rng.uniform(*self.ROBOT_BASE_YAW_RANGE)
             quat = np.zeros(4, dtype=float)
             _mujoco.mju_euler2Quat(quat, np.array([0.0, 0.0, yaw]), "xyz")
             self.sim.data.set_joint_qpos(
@@ -1093,6 +1104,38 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
         )
         return signals
 
+    def _setup_observables(self):
+        observables = super()._setup_observables()
+
+        @sensor(modality="object")
+        def obj_pos(obs_cache):
+            return self.sim.data.body_xpos[self.obj_body_id["bottle"]]
+
+        @sensor(modality="object")
+        def obj_quat(obs_cache):
+            return self.sim.data.body_xquat[self.obj_body_id["bottle"]]
+
+        for s in [obj_pos, obj_quat]:
+            observables[s.__name__] = Observable(
+                name=s.__name__,
+                sensor=s,
+                sampling_rate=self.control_freq,
+            )
+
+        return observables
+
+    def get_privileged_obs_keys(self):
+        return {
+            "obj_pos": (3,),
+            "obj_quat": (4,),
+        }
+
+    def get_privileged_obs_values(self):
+        return {
+            "obj_pos": self.sim.data.body_xpos[self.obj_body_id["bottle"]].copy(),
+            "obj_quat": self.sim.data.body_xquat[self.obj_body_id["bottle"]].copy(),
+        }
+
     @staticmethod
     def task_config():
         task = DexMGConfigHelper.AttrDict()
@@ -1122,6 +1165,266 @@ class PnPBottleRomain(_Kitchen, DexMGConfigHelper):
 
 
 register_locomanipulation_env(PnPBottleRomain)
+
+
+class PickPlaceBottleLoco(_Kitchen, DexMGConfigHelper):
+    """
+    Pick-and-place bottle environment built on top of KitchenArena.
+
+    Single bottle placed at the position where the cardbox used to be
+    (in front of the fridge). No counter bottle, no cardbox.
+    """
+
+    ROBOT_BASE_POS_RANGE_X: tuple = (-0.15, 0.15)
+    ROBOT_BASE_POS_RANGE_Y: tuple = (-0.10, 0.10)
+    ROBOT_BASE_YAW_RANGE: tuple = (-0.15, 0.15)
+
+    # World-space position of the bottle (former cardbox location). z lowered to
+    # avoid the bottle spawning above the surface and falling over.
+    # x,y match original CARDBOX_POS; z = surface (0.90) + bottle mesh half-height (0.061)
+    BOTTLE_POS: np.ndarray = np.array([2.0, -3.36, 1.5])
+    BOTTLE_POS_RANGE_X: tuple = (-0.1, 0.1)
+    BOTTLE_POS_RANGE_Y: tuple = (-0.15, 0.15)
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("layout_ids", [12])
+        kwargs.setdefault("style_ids", [3])
+        kwargs.setdefault("init_robot_base_ref", "stove")
+        self._bottle_objects: dict = {}
+        super().__init__(*args, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Model loading
+    # ------------------------------------------------------------------
+
+    def _load_model(self):
+        super()._load_model()
+        self._inject_robot_cameras()
+        self._bottle = self._create_bottle("bottle")
+
+    def _inject_robot_cameras(self):
+        from copy import deepcopy
+        import robocasa.utils.camera_utils as CamUtils
+
+        cam_configs = deepcopy(CamUtils.CAM_CONFIGS["DEFAULT"])
+        for robot in self.robots:
+            if hasattr(robot.robot_model, "get_camera_configs"):
+                cam_configs.update(robot.robot_model.get_camera_configs())
+        self._cam_configs.update(cam_configs)
+
+        for cam_name, cam_cfg in cam_configs.items():
+            if cam_cfg.get("parent_body", None) is not None:
+                continue
+            self.mujoco_arena.set_camera(
+                camera_name=cam_name,
+                pos=cam_cfg["pos"],
+                quat=cam_cfg["quat"],
+                camera_attribs=cam_cfg.get("camera_attribs", None),
+            )
+
+    def _get_obj_cfgs(self):
+        return []
+
+    # ------------------------------------------------------------------
+    # Bottle helpers
+    # ------------------------------------------------------------------
+
+    def _create_bottle(self, name: str = "bottle"):
+        """Inject a real mesh bottled_water_1 object into the compiled model."""
+        import types
+        import robocasa.models
+
+        xml_path = xml_path_completion(
+            "objects/aigen_objs/bottled_water/bottled_water_1/model.xml",
+            root=robocasa.models.assets_root,
+        )
+        asset_dir = os.path.dirname(xml_path)
+        tex_dir = os.path.join(robocasa.models.assets_root, "textures")
+
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+
+        # Make all asset paths absolute; remap broken dev-machine absolute paths
+        asset_elem = root.find("asset")
+        for elem in list(asset_elem):
+            old_path = elem.get("file")
+            if old_path is None:
+                continue
+            if os.path.isabs(old_path):
+                if not os.path.exists(old_path):
+                    elem.set("file", os.path.join(tex_dir, os.path.basename(old_path)))
+            else:
+                elem.set("file", os.path.join(asset_dir, old_path))
+
+        # Extract body; outer_body wraps inner_body named "object"
+        worldbody = root.find("worldbody")
+        outer_body = worldbody.find("body")
+        inner_body = outer_body.find("body")
+
+        # Name collision geoms for _check_grasp; drop region bbox (undefined class)
+        contact_geom_names = []
+        coll_idx = 0
+        for geom in list(inner_body.findall("geom")):
+            if geom.get("class") == "region":
+                inner_body.remove(geom)
+                continue
+            if geom.get("group") == "0":
+                geom_name = f"{name}_col_{coll_idx}"
+                geom.set("name", geom_name)
+                contact_geom_names.append(geom_name)
+                coll_idx += 1
+
+        outer_body.set("name", f"{name}_body")
+        free_joint = ET.Element("joint", name=f"{name}_joint", type="free", damping="0.0005")
+        outer_body.insert(0, free_joint)
+
+        for elem in list(asset_elem):
+            self.model.asset.append(elem)
+        self.model.worldbody.append(outer_body)
+
+        self._bottle_objects[name] = {"name": f"{name}_body"}
+        return types.SimpleNamespace(contact_geoms=contact_geom_names)
+
+    # ------------------------------------------------------------------
+    # References & reset
+    # ------------------------------------------------------------------
+
+    def _setup_references(self):
+        super()._setup_references()
+        for name, model in self._bottle_objects.items():
+            self.obj_body_id[name] = self.sim.model.body_name2id(model["name"])
+
+    def _reset_internal(self):
+        super()._reset_internal()
+
+        self.init_robot_base_pos = self.init_robot_base_pos_anchor
+        self.init_robot_base_ori = self.init_robot_base_ori_anchor
+
+        base_joint = f"{self.robots[0].robot_model.naming_prefix}base"
+        if base_joint in self.sim.model.joint_names:
+            import mujoco as _mujoco
+            z = LocoManipulationEnv.ROBOT_POS_OFFSETS.get(
+                self.robots[0].robot_model.__class__.__name__, [0, 0, 0.793]
+            )[2]
+            pos = self.init_robot_base_pos_anchor.copy()
+            yaw = self.init_robot_base_ori_anchor[2] + np.pi
+            if not self.deterministic_reset:
+                pos = pos + np.array([
+                    self.rng.uniform(*self.ROBOT_BASE_POS_RANGE_X),
+                    self.rng.uniform(*self.ROBOT_BASE_POS_RANGE_Y),
+                    0.0,
+                ])
+                yaw += self.rng.uniform(*self.ROBOT_BASE_YAW_RANGE)
+            quat = np.zeros(4, dtype=float)
+            _mujoco.mju_euler2Quat(quat, np.array([0.0, 0.0, yaw]), "xyz")
+            self.sim.data.set_joint_qpos(
+                base_joint, np.concatenate([[pos[0], pos[1], z], quat])
+            )
+            self.sim.forward()
+
+        self._place_bottle()
+
+    def _place_bottle(self) -> None:
+        """Place the bottle at BOTTLE_POS with a small random x/y offset."""
+        offset_x = self.rng.uniform(*self.BOTTLE_POS_RANGE_X)
+        offset_y = self.rng.uniform(*self.BOTTLE_POS_RANGE_Y)
+        pos = self.BOTTLE_POS + np.array([offset_x, offset_y, 0.0])
+        qpos = self.sim.data.get_joint_qpos("bottle_joint").copy()
+        qpos[:3] = pos
+        qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0])
+        self.sim.data.set_joint_qpos("bottle_joint", qpos)
+
+    def _post_action(self, action):
+        ret = super()._post_action(action)
+        base_joint = f"{self.robots[0].robot_model.naming_prefix}base"
+        print("G1 pos:", self.sim.data.get_joint_qpos(base_joint)[:3])
+        return ret
+
+    # ------------------------------------------------------------------
+    # Task interface
+    # ------------------------------------------------------------------
+
+    def _check_success(self):
+        check_grasp = self._check_grasp(
+            self.robots[0].gripper["right"], self._bottle.contact_geoms
+        )
+        bottle_z = self.sim.data.body_xpos[self.obj_body_id["bottle"]][2]
+        return check_grasp and bottle_z > self.BOTTLE_POS[2] + 0.2
+
+    def get_object(self):
+        return {
+            name: dict(obj_name=model["name"], obj_type="body")
+            for name, model in self._bottle_objects.items()
+        }
+
+    def get_subtask_term_signals(self):
+        signals = {}
+        signals["grasp_bottle"] = int(
+            self._check_grasp(self.robots[0].gripper["right"], self._bottle.contact_geoms)
+        )
+        return signals
+
+    def _setup_observables(self):
+        observables = super()._setup_observables()
+
+        @sensor(modality="object")
+        def obj_pos(obs_cache):
+            return self.sim.data.body_xpos[self.obj_body_id["bottle"]]
+
+        @sensor(modality="object")
+        def obj_quat(obs_cache):
+            return self.sim.data.body_xquat[self.obj_body_id["bottle"]]
+
+        for s in [obj_pos, obj_quat]:
+            observables[s.__name__] = Observable(
+                name=s.__name__,
+                sensor=s,
+                sampling_rate=self.control_freq,
+            )
+
+        return observables
+
+    def get_privileged_obs_keys(self):
+        return {
+            "obj_pos": (3,),
+            "obj_quat": (4,),
+        }
+
+    def get_privileged_obs_values(self):
+        return {
+            "obj_pos": self.sim.data.body_xpos[self.obj_body_id["bottle"]].copy(),
+            "obj_quat": self.sim.data.body_xquat[self.obj_body_id["bottle"]].copy(),
+        }
+
+    @staticmethod
+    def task_config():
+        task = DexMGConfigHelper.AttrDict()
+        task.task_spec_0.subtask_1 = dict(
+            object_ref="bottle",
+            subtask_term_signal="grasp_bottle",
+            subtask_term_offset_range=None,
+            selection_strategy="random",
+            selection_strategy_kwargs=None,
+            action_noise=0.05,
+            num_interpolation_steps=5,
+            num_fixed_steps=0,
+            apply_noise_during_interpolation=False,
+        )
+        task.task_spec_1.subtask_1 = dict(
+            object_ref=None,
+            subtask_term_signal=None,
+            subtask_term_offset_range=None,
+            selection_strategy="random",
+            selection_strategy_kwargs=None,
+            action_noise=0.05,
+            num_interpolation_steps=5,
+            num_fixed_steps=0,
+            apply_noise_during_interpolation=False,
+        )
+        return task.to_dict()
+
+
+register_locomanipulation_env(PickPlaceBottleLoco)
 
 
 def create_shelf(pos: list[float], euler: list[float]) -> MJCFObject:

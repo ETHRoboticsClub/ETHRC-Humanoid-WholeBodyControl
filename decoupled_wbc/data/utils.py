@@ -2,9 +2,14 @@ from decoupled_wbc.control.robot_model.robot_model import RobotModel
 from decoupled_wbc.data.constants import RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH
 
 
-def get_modality_config(robot_model: RobotModel, add_stereo_camera: bool = False) -> dict:
+def get_modality_config(
+    robot_model: RobotModel,
+    add_stereo_camera: bool = False,
+    privileged_obs: dict | None = None,
+) -> dict:
     """
     Get the modality config for the robot model.
+    privileged_obs: dict mapping obs key → shape tuple, e.g. {"obj_pos": (3,)}.
     """
     left_hand_indices = sorted(robot_model.get_joint_group_indices("left_hand"))
     right_hand_indices = sorted(robot_model.get_joint_group_indices("right_hand"))
@@ -37,6 +42,7 @@ def get_modality_config(robot_model: RobotModel, add_stereo_camera: bool = False
                 "original_key": "observation.eef_state",
                 "rotation_type": "quaternion",
             },
+            "robot_base_pose": {"start": 0, "end": 7, "original_key": "observation.robot_base_pose"},
         },
         "action": {
             "left_leg": {"start": left_leg_indices[0], "end": left_leg_indices[-1] + 1},
@@ -78,12 +84,25 @@ def get_modality_config(robot_model: RobotModel, add_stereo_camera: bool = False
             }
         )
 
+    if privileged_obs:
+        for key, shape in privileged_obs.items():
+            modality_config["state"][key] = {
+                "start": 0,
+                "end": shape[0],
+                "original_key": f"observation.{key}",
+            }
+
     return modality_config
 
 
-def get_dataset_features(robot_model: RobotModel, add_stereo_camera: bool = False) -> dict:
+def get_dataset_features(
+    robot_model: RobotModel,
+    add_stereo_camera: bool = False,
+    privileged_obs: dict | None = None,
+) -> dict:
     """
     Get the dataset features for the robot model.
+    privileged_obs: dict mapping obs key → shape tuple, e.g. {"obj_pos": (3,)}.
     """
     dataset_features = {
         "observation.images.ego_view": {
@@ -136,6 +155,11 @@ def get_dataset_features(robot_model: RobotModel, add_stereo_camera: bool = Fals
             "shape": (1,),
             "names": "base_height_command",
         },
+        "observation.robot_base_pose": {
+            "dtype": "float64",
+            "shape": (7,),
+            "names": ["x", "y", "z", "qx", "qy", "qz", "qw"],
+        },
     }
     if add_stereo_camera:
         dataset_features.update(
@@ -152,5 +176,13 @@ def get_dataset_features(robot_model: RobotModel, add_stereo_camera: bool = Fals
                 },
             }
         )
+
+    if privileged_obs:
+        for key, shape in privileged_obs.items():
+            dataset_features[f"observation.{key}"] = {
+                "dtype": "float64",
+                "shape": shape,
+                "names": [f"dim_{i}" for i in range(shape[0])],
+            }
 
     return dataset_features

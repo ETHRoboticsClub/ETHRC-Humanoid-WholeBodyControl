@@ -322,6 +322,8 @@ class G1Deployment:
             self.config.camera_host,
             "--camera_port",
             str(self.config.camera_port),
+            "--env_name",
+            self.config.env_name,
         ]
 
         if not self.config.add_stereo_camera:

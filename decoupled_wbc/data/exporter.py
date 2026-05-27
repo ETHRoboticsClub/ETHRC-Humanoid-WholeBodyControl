@@ -440,14 +440,12 @@ class Gr00tDataExporter(LeRobotDataset):
         return video_paths
 
     def save_episode_as_discarded(self) -> None:
-        """
-        Flag ongoing episode as discarded and save it to disk. Failed manipulations (grasp, manipulation) are
-        flagged as discarded. It will add the episode index to the discarded episode indices list in info.json.
-        """
-        self.meta.info["discarded_episode_indices"] = self.meta.info.get(
-            "discarded_episode_indices", []
-        ) + [self.episode_buffer["episode_index"]]
-        self.save_episode()
+        """Discard the ongoing episode: cancel video writers (deletes partial files) and reset the buffer
+        without advancing the episode index or writing any parquet data."""
+        for writer in self.video_writers.values():
+            writer.cancel()
+        self.episode_buffer = self.create_episode_buffer()
+        self.video_writers = self.create_video_writer()
 
 
 def hf_transform_to_torch_by_features(

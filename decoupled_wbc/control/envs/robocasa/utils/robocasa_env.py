@@ -428,9 +428,18 @@ class Gr00tLocomanipRoboCasaEnv(RoboCasaEnv):
             mapped_camera_name = self.camera_key_mapper.get_camera_config(camera_name)[0]
             obs[f"{mapped_camera_name}_image"] = raw_obs[f"{camera_name}_image"]
 
-        # Add privileged observations
-        if hasattr(self.env, "get_privileged_obs_keys"):
-            for key in self.env.get_privileged_obs_keys():
+        # Add privileged observations — unwrap to find the raw env (e.g. past IKWrapper)
+        _raw_env = self.env
+        while not hasattr(_raw_env, "get_privileged_obs_values") and not hasattr(_raw_env, "get_privileged_obs_keys"):
+            inner = getattr(_raw_env, "env", None)
+            if inner is None or inner is _raw_env:
+                break
+            _raw_env = inner
+        if hasattr(_raw_env, "get_privileged_obs_values"):
+            for key, value in _raw_env.get_privileged_obs_values().items():
+                obs[key] = value
+        elif hasattr(_raw_env, "get_privileged_obs_keys"):
+            for key in _raw_env.get_privileged_obs_keys():
                 obs[key] = raw_obs[key]
 
         # Add robot-specific observations

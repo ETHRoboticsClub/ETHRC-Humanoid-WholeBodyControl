@@ -1,5 +1,6 @@
 IMAGE_TOPIC_NAME = "realsense/color/image_raw"
 STATE_TOPIC_NAME = "G1Env/env_state_act"
+PRIVILEGED_OBS_TOPIC = "G1Env/privileged_obs"
 CONTROL_GOAL_TOPIC = "ControlPolicy/upper_body_pose"
 ROBOT_CONFIG_TOPIC = "WBCPolicy/robot_config"
 KEYBOARD_INPUT_TOPIC = "/keyboard_input"

@@ -21,6 +21,18 @@ from decoupled_wbc.data.exporter import DataCollectionInfo, Gr00tDataExporter
 from decoupled_wbc.data.utils import get_dataset_features, get_modality_config
 
 
+def _get_privileged_obs(env_name: str) -> dict:
+    """Return the privileged obs dict for env_name, or {} if the env doesn't expose any."""
+    try:
+        from robocasa.environments.locomanipulation import REGISTERED_LOCOMANIPULATION_ENVS
+        env_cls = REGISTERED_LOCOMANIPULATION_ENVS.get(env_name)
+        if env_cls is not None and hasattr(env_cls, "get_privileged_obs_keys"):
+            return env_cls.get_privileged_obs_keys(None)
+    except Exception:
+        pass
+    return {}
+
+
 class TimeDeltaException(Exception):
     def __init__(self, failure_count: int, reset_timeout_sec: float):
         """
@@ -181,7 +193,21 @@ class Gr00tDataCollector:
                 "teleop.base_height_command": np.array(
                     [self.latest_proprio_msg["base_height_command"]], dtype=np.float64
                 ),
+                "observation.robot_base_pose": np.array(
+                    self.latest_proprio_msg.get("floating_base_pose", np.full(7, np.nan)),
+                    dtype=np.float64,
+                ),
             }
+
+            # Add env-specific privileged observations (present only when the env exposes them)
+            for feature_name, feature_info in self.data_exporter.features.items():
+                if not feature_name.startswith("observation.") or feature_info.get("dtype") in ["image", "video"]:
+                    continue
+                if feature_name in frame_data:
+                    continue
+                msg_key = feature_name[len("observation."):]  # strip prefix to get the msg dict key
+                value = self.latest_proprio_msg.get(msg_key, np.full(feature_info["shape"], np.nan))
+                frame_data[feature_name] = np.array(value, dtype=np.float64)
 
             # Add images based on dataset features
             images = self.latest_image_msg["images"]
@@ -283,8 +309,9 @@ def main(config: DataExporterConfig):
         waist_location=waist_location, high_elbow_pose=config.high_elbow_pose
     )
 
-    dataset_features = get_dataset_features(g1_rm, config.add_stereo_camera)
-    modality_config = get_modality_config(g1_rm, config.add_stereo_camera)
+    privileged_obs = _get_privileged_obs(config.env_name)
+    dataset_features = get_dataset_features(g1_rm, config.add_stereo_camera, privileged_obs)
+    modality_config = get_modality_config(g1_rm, config.add_stereo_camera, privileged_obs)
 
     text_to_speech = TextToSpeech() if config.text_to_speech else None
 
@@ -336,7 +363,7 @@ if __name__ == "__main__":
     add_to_existing_dataset = input("Add to existing dataset? (y/n): ").strip().lower()
 
     if add_to_existing_dataset == "y":
-        config.dataset_name = input("Enter the dataset name: ").strip().lower()
+        config.dataset_name = input("Enter the dataset name: ").strip()
         # When adding to existing dataset, we don't need robot_id or operator usernames
         # as they should already be set in the existing dataset
     elif add_to_existing_dataset == "n":

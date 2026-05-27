@@ -11,6 +11,7 @@ from decoupled_wbc.control.main.constants import (
     DEFAULT_WRIST_POSE,
     JOINT_SAFETY_STATUS_TOPIC,
     LOWER_BODY_POLICY_STATUS_TOPIC,
+    PRIVILEGED_OBS_TOPIC,
     ROBOT_CONFIG_TOPIC,
     STATE_TOPIC_NAME,
 )
@@ -48,6 +49,7 @@ def main(config: ControlLoopConfig):
     data_exp_pub = ROSMsgPublisher(STATE_TOPIC_NAME)
     lower_body_policy_status_pub = ROSMsgPublisher(LOWER_BODY_POLICY_STATUS_TOPIC)
     joint_safety_status_pub = ROSMsgPublisher(JOINT_SAFETY_STATUS_TOPIC)
+    privileged_obs_sub = ROSMsgSubscriber(PRIVILEGED_OBS_TOPIC)
 
     # Initialize telemetry
     telemetry = Telemetry(window_size=100)
@@ -186,6 +188,11 @@ def main(config: ControlLoopConfig):
                 for key in obs.keys():
                     if key.endswith("_image"):
                         del msg[key]
+
+                # Merge privileged obs (e.g. object positions) published by the sim loop
+                privileged_obs_msg = privileged_obs_sub.get_msg()
+                if privileged_obs_msg is not None:
+                    msg.update(privileged_obs_msg)
 
                 # exporting data
                 if last_teleop_cmd:

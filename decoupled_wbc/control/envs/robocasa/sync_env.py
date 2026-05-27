@@ -187,8 +187,15 @@ class SyncEnv(gym.Env):
 
         obs["annotation.human.task_description"] = raw_obs["language.language_instruction"]
 
-        if hasattr(self.base_env, "get_privileged_obs_keys"):
-            for key in self.base_env.get_privileged_obs_keys():
+        _priv_env = self.base_env
+        while not hasattr(_priv_env, "get_privileged_obs_keys"):
+            inner = getattr(_priv_env, "env", None)
+            if inner is None or inner is _priv_env:
+                _priv_env = None
+                break
+            _priv_env = inner
+        if _priv_env is not None:
+            for key in _priv_env.get_privileged_obs_keys():
                 obs[key] = raw_obs[key]
 
         for key in raw_obs.keys():
@@ -325,8 +332,15 @@ class SyncEnv(gym.Env):
             max_length=256, charset=ALLOWED_LANGUAGE_CHARSET
         )
 
-        if hasattr(self.base_env, "get_privileged_obs_keys"):
-            for key, shape in self.base_env.get_privileged_obs_keys().items():
+        _priv_env_space = self.base_env
+        while not hasattr(_priv_env_space, "get_privileged_obs_keys"):
+            inner = getattr(_priv_env_space, "env", None)
+            if inner is None or inner is _priv_env_space:
+                _priv_env_space = None
+                break
+            _priv_env_space = inner
+        if _priv_env_space is not None:
+            for key, shape in _priv_env_space.get_privileged_obs_keys().items():
                 space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=shape)
                 obs_space[key] = space
 

@@ -12,7 +12,9 @@ from decoupled_wbc.control.envs.robocasa.utils.robocasa_env import (
     Gr00tLocomanipRoboCasaEnv,
 )  # noqa: F401
 from decoupled_wbc.control.robot_model.robot_model import RobotModel
+from decoupled_wbc.control.main.constants import PRIVILEGED_OBS_TOPIC
 from decoupled_wbc.control.utils.keyboard_dispatcher import KeyboardListenerSubscriber
+from decoupled_wbc.control.utils.ros_utils import ROSMsgPublisher
 
 
 class RoboCasaEnvServer:
@@ -76,6 +78,8 @@ class RoboCasaEnvServer:
 
         # Initialize keyboard listener for env reset
         self.keyboard_listener = KeyboardListenerSubscriber()
+
+        self._privileged_obs_pub = ROSMsgPublisher(PRIVILEGED_OBS_TOPIC)
 
         self.reset()
 
@@ -208,6 +212,7 @@ class RoboCasaEnvServer:
 
             # Publish observations and get new action
             self.publish_obs()
+            self._publish_privileged_obs()
             action, ready, is_new_action = self.get_action()
             # ready is True if the action is received from the control loop
             # is_new_action is True if the action is new (not the same as the previous action)
@@ -272,12 +277,37 @@ class RoboCasaEnvServer:
 
             self.control_rate.sleep()
     
+    def _publish_privileged_obs(self):
+        """Publish privileged obs (e.g. object positions) via ROS for the control loop."""
+        privileged = {}
+        with self.cache_lock:
+            _priv_env = self.base_env
+            while not hasattr(_priv_env, "get_privileged_obs_keys"):
+                inner = getattr(_priv_env, "env", None)
+                if inner is None or inner is _priv_env:
+                    _priv_env = None
+                    break
+                _priv_env = inner
+            if _priv_env is not None and self.caches["obs"] is not None:
+                for key in _priv_env.get_privileged_obs_keys():
+                    if key in self.caches["obs"]:
+                        privileged[key] = self.caches["obs"][key]
+        if privileged:
+            self._privileged_obs_pub.publish(privileged)
+
     def get_privileged_obs(self):
         """Get privileged observation. Should be implemented by subclasses."""
         obs = {}
         with self.cache_lock:
-            if hasattr(self.base_env, "get_privileged_obs_keys"):
-                for key in self.base_env.get_privileged_obs_keys():
+            _priv_env = self.base_env
+            while not hasattr(_priv_env, "get_privileged_obs_keys"):
+                inner = getattr(_priv_env, "env", None)
+                if inner is None or inner is _priv_env:
+                    _priv_env = None
+                    break
+                _priv_env = inner
+            if _priv_env is not None:
+                for key in _priv_env.get_privileged_obs_keys():
                     obs[key] = self.caches["obs"][key]
 
             for key in self.caches["obs"].keys():
