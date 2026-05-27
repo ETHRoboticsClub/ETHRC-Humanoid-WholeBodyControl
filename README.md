@@ -28,7 +28,7 @@ python decoupled_wbc/scripts/deploy_g1.py     --interface sim     --camera_host 
 ## With teleop : 
 On robot PC, double click app icon of XRoboToolkit-PC-Service or run service
 ```shell 
-/opt/apps/roboticsservice/runService.sh
+    /opt/apps/roboticsservice/runService.sh
 ```
 
 ```shell
@@ -44,4 +44,21 @@ Move to the right first, then pick up the cardboard box located on the counterto
 
 ### Task prompt for the PickPlaceBottleLoco task
 
-Turn right, move in front of the water bottle on the counter in front of the fridge, pick it up, then place it into the sink on your left.
+Turn right, move in front of the water bottle on the counter in front of the fridge, pick up the water bottle, then turn left, walk to the sink, and place the water bottle into the sink.
+
+
+### Trim the dataset if needed : 
+```shell
+conda activate lerobot-trim
+```
+Add rights to modify the dataset (because was created from docker container) : 
+```shell 
+sudo chown rguntz /home/rguntz/Desktop/humanoid/ETHRC-Humanoid-WholeBodyControl/outputs/
+```
+ 
+Then run the dashboard : 
+```shell
+cd /home/rguntz/Desktop/humanoid/ETHRC-Humanoid-WholeBodyControl
+python trim_dashboard/app.py
+``
+

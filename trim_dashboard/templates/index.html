@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Episode Trim Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 13px;
+    background: #141414;
+    color: #d4d4d4;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  #header {
+    background: #1e1e1e;
+    border-bottom: 1px solid #2d2d2d;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  #header h1 { font-size: 14px; font-weight: 600; color: #e0e0e0; }
+  #header .dataset-label { color: #666; font-size: 11px; flex: 1; }
+  #header .dataset-label span { color: #4ec9b0; }
+
+  /* ── Layout ── */
+  #content {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    width: 200px;
+    flex-shrink: 0;
+    background: #1a1a1a;
+    border-right: 1px solid #2d2d2d;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #sidebar-header {
+    padding: 8px 12px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #555;
+    border-bottom: 1px solid #2d2d2d;
+    flex-shrink: 0;
+  }
+  #episode-list {
+    overflow-y: auto;
+    flex: 1;
+  }
+  #episode-list::-webkit-scrollbar { width: 4px; }
+  #episode-list::-webkit-scrollbar-track { background: #1a1a1a; }
+  #episode-list::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 2px; }
+
+  .ep-item {
+    padding: 6px 12px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-left: 3px solid transparent;
+    transition: background 0.1s;
+    user-select: none;
+  }
+  .ep-item:hover { background: #222; }
+  .ep-item.active {
+    background: #1e2e1e;
+    border-left-color: #4caf50;
+    color: #e0e0e0;
+  }
+  .ep-item .ep-idx { color: #9cdcfe; }
+  .ep-item .ep-len { color: #888; font-size: 11px; }
+  .ep-item.trimmed .ep-len { color: #ffa500; }
+  .ep-item.trimmed .ep-idx::after {
+    content: " ✂";
+    color: #ffa500;
+    font-size: 10px;
+  }
+
+  /* ── Main panel ── */
+  #main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 16px;
+    gap: 10px;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  /* ── Video ── */
+  #video-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+  }
+  #video-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #video-key-select {
+    background: #2a2a2a;
+    color: #d4d4d4;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #no-episode-msg {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #444;
+    font-size: 15px;
+  }
+  #video-wrap {
+    flex: 1;
+    background: #000;
+    border-radius: 6px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+  }
+  #video {
+    max-width: 100%;
+    max-height: 100%;
+    display: block;
+    outline: none;
+  }
+
+  /* ── Timeline ── */
+  #timeline-section { flex-shrink: 0; }
+
+  #scrubber-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #scrubber-wrap {
+    flex: 1;
+    position: relative;
+    height: 28px;
+    display: flex;
+    align-items: center;
+  }
+  #scrubber {
+    width: 100%;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #2d2d2d;
+    border-radius: 3px;
+    outline: none;
+    cursor: pointer;
+  }
+  #scrubber::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #4caf50;
+    cursor: pointer;
+    border: 2px solid #1a1a1a;
+    transition: transform 0.1s;
+  }
+  #scrubber::-webkit-slider-thumb:hover { transform: scale(1.3); }
+  #scrubber::-webkit-slider-runnable-track {
+    background: linear-gradient(to right, #4caf50 0%, #4caf50 var(--pct, 0%), #2d2d2d var(--pct, 0%), #2d2d2d 100%);
+    border-radius: 3px;
+    height: 6px;
+  }
+
+  #frame-readout {
+    font-size: 12px;
+    color: #888;
+    white-space: nowrap;
+    min-width: 180px;
+    text-align: right;
+  }
+  #frame-readout .current { color: #e0e0e0; font-weight: 600; }
+
+  /* ── Controls ── */
+  #controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+
+  button {
+    padding: 5px 12px;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    background: #252525;
+    color: #d4d4d4;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.1s;
+    white-space: nowrap;
+  }
+  button:hover { background: #333; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:focus { outline: 1px solid #4caf50; }
+
+  #btn-play { min-width: 64px; }
+  #btn-play.playing { color: #ffd700; border-color: #555; }
+
+  #btn-trim {
+    background: #6b1a1a;
+    border-color: #8b2222;
+    color: #ffaaaa;
+    font-weight: 600;
+    margin-left: auto;
+  }
+  #btn-trim:hover { background: #7d2020; }
+  #btn-trim:disabled { background: #3a2222; color: #666; }
+
+  #btn-finalize {
+    background: #1a3a5c;
+    border-color: #2255aa;
+    color: #aaccff;
+  }
+  #btn-finalize:hover { background: #1e4570; }
+
+  .sep {
+    width: 1px;
+    height: 20px;
+    background: #333;
+    margin: 0 4px;
+  }
+
+  /* ── Status bar ── */
+  #status-bar {
+    flex-shrink: 0;
+    padding: 4px 8px;
+    background: #1a1a1a;
+    border: 1px solid #2d2d2d;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #888;
+    min-height: 24px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #status-bar .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #555;
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  #status-bar.ok .dot   { background: #4caf50; }
+  #status-bar.warn .dot { background: #ffa500; }
+  #status-bar.err .dot  { background: #f44336; }
+  #status-bar.busy .dot { background: #2196f3; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  #status-msg { flex: 1; }
+
+  /* ── Spinner overlay ── */
+  #spinner {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    font-size: 15px;
+    color: #aaa;
+    gap: 10px;
+    flex-direction: column;
+  }
+  #spinner.active { display: flex; }
+  .spin-ring {
+    width: 32px; height: 32px;
+    border: 3px solid #333;
+    border-top-color: #4caf50;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Confirm modal ── */
+  #modal-bg {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: none; align-items: center; justify-content: center;
+    z-index: 200;
+  }
+  #modal-bg.active { display: flex; }
+  #modal {
+    background: #1e1e1e;
+    border: 1px solid #3a3a3a;
+    border-radius: 8px;
+    padding: 24px 28px;
+    max-width: 440px;
+    width: 90%;
+  }
+  #modal h2 { font-size: 14px; margin-bottom: 12px; color: #e0e0e0; }
+  #modal p { color: #888; margin-bottom: 20px; line-height: 1.5; font-size: 12px; }
+  #modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  #modal #modal-confirm { background: #6b1a1a; border-color: #8b2222; color: #ffaaaa; font-weight: 600; }
+  #modal #modal-confirm:hover { background: #7d2020; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<div id="header">
+  <h1>Episode Trim Dashboard</h1>
+  <div class="dataset-label">Working copy: <span id="dataset-path-label">—</span></div>
+  <button id="btn-finalize" onclick="finalizeDataset()" disabled>Finalize (reindex)</button>
+</div>
+
+<!-- ── Body ── -->
+<div id="content">
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div id="sidebar-header">Episodes (<span id="ep-count">0</span>)</div>
+    <div id="episode-list"></div>
+  </div>
+
+  <!-- Main -->
+  <div id="main">
+
+    <!-- Video section -->
+    <div id="video-section">
+      <div id="video-toolbar">
+        <label for="video-key-select" style="color:#555;font-size:11px;">Camera:</label>
+        <select id="video-key-select" onchange="onCameraChange()">
+          <option value="observation.images.ego_view">ego_view</option>
+          <option value="observation.images.ego_view_left_mono">ego_view_left_mono</option>
+          <option value="observation.images.ego_view_right_mono">ego_view_right_mono</option>
+        </select>
+        <span id="ep-title" style="color:#555;font-size:11px;margin-left:4px;">— no episode selected —</span>
+      </div>
+      <div id="video-wrap">
+        <div id="no-episode-msg">← select an episode</div>
+        <video id="video" preload="metadata" style="display:none"></video>
+      </div>
+    </div>
+
+    <!-- Timeline -->
+    <div id="timeline-section">
+      <div id="scrubber-row">
+        <div id="scrubber-wrap">
+          <input type="range" id="scrubber" min="0" max="100" value="0" step="1">
+        </div>
+        <div id="frame-readout">—</div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div id="controls">
+      <button onclick="stepFrame(-10)" title="−10 frames (Shift+←)">«10</button>
+      <button onclick="stepFrame(-1)"  title="−1 frame (←)">‹1</button>
+      <button id="btn-play" onclick="togglePlay()" title="Play/Pause (Space)" disabled>▶ Play</button>
+      <button onclick="stepFrame(1)"   title="+1 frame (→)">1›</button>
+      <button onclick="stepFrame(10)"  title="+10 frames (Shift+→)">10»</button>
+      <div class="sep"></div>
+      <button onclick="goToFrame(0)"   title="Go to first frame">|←</button>
+      <button onclick="goToEnd()"      title="Go to last frame">→|</button>
+      <div class="sep"></div>
+      <button id="btn-trim" onclick="askTrim()" disabled title="Trim episode at cursor (T)">✂ Trim Here</button>
+    </div>
+
+    <!-- Status -->
+    <div id="status-bar">
+      <div class="dot"></div>
+      <span id="status-msg">Select an episode from the sidebar to begin.</span>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Spinner ── -->
+<div id="spinner"><div class="spin-ring"></div><span id="spinner-msg">Working…</span></div>
+
+<!-- ── Confirm modal ── -->
+<div id="modal-bg">
+  <div id="modal">
+    <h2>Confirm Trim</h2>
+    <p id="modal-body">—</p>
+    <div class="modal-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button id="modal-confirm" onclick="doTrim()">✂ Trim</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+const FPS = 20;
+let episodes = [];          // [{episode_index, tasks, length}, ...]
+let currentEp = null;       // currently selected episode object
+let trimmedSet = new Set(); // episode indices that have been trimmed this session
+let pendingTrimFrame = -1;  // frame stored while modal is open
+
+const videoEl   = document.getElementById('video');
+const scrubber  = document.getElementById('scrubber');
+const frameRead = document.getElementById('frame-readout');
+const statusBar = document.getElementById('status-bar');
+const statusMsg = document.getElementById('status-msg');
+const btnPlay   = document.getElementById('btn-play');
+const btnTrim   = document.getElementById('btn-trim');
+const btnFinalize = document.getElementById('btn-finalize');
+const spinner   = document.getElementById('spinner');
+const spinnerMsg = document.getElementById('spinner-msg');
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+async function boot() {
+  const resp = await fetch('/api/episodes');
+  episodes = await resp.json();
+  document.getElementById('ep-count').textContent = episodes.length;
+  document.getElementById('dataset-path-label').textContent =
+    window.location.hostname + ':' + window.location.port + ' (trimmed copy)';
+  renderSidebar();
+  setStatus('ready', `Loaded ${episodes.length} episodes. Select one to start.`);
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+function renderSidebar() {
+  const list = document.getElementById('episode-list');
+  list.innerHTML = '';
+  for (const ep of episodes) {
+    const div = document.createElement('div');
+    div.className = 'ep-item' + (trimmedSet.has(ep.episode_index) ? ' trimmed' : '');
+    div.id = `ep-${ep.episode_index}`;
+    const secs = (ep.length / FPS).toFixed(1);
+    div.innerHTML =
+      `<span class="ep-idx">Ep ${ep.episode_index}</span>` +
+      `<span class="ep-len">${ep.length}f / ${secs}s</span>`;
+    div.addEventListener('click', () => selectEpisode(ep.episode_index));
+    list.appendChild(div);
+  }
+}
+
+function refreshSidebarItem(epIdx) {
+  const ep = episodes.find(e => e.episode_index === epIdx);
+  if (!ep) return;
+  const div = document.getElementById(`ep-${epIdx}`);
+  if (!div) return;
+  const secs = (ep.length / FPS).toFixed(1);
+  div.querySelector('.ep-len').textContent = `${ep.length}f / ${secs}s`;
+  if (trimmedSet.has(epIdx)) div.classList.add('trimmed');
+}
+
+// ── Select episode ────────────────────────────────────────────────────────────
+function selectEpisode(epIdx) {
+  currentEp = episodes.find(e => e.episode_index === epIdx);
+  if (!currentEp) return;
+
+  // Highlight sidebar
+  document.querySelectorAll('.ep-item').forEach(el => el.classList.remove('active'));
+  const sideItem = document.getElementById(`ep-${epIdx}`);
+  if (sideItem) { sideItem.classList.add('active'); sideItem.scrollIntoView({ block: 'nearest' }); }
+
+  // Title
+  document.getElementById('ep-title').textContent =
+    `Episode ${epIdx}  ·  ${currentEp.length} frames  ·  ${(currentEp.length/FPS).toFixed(2)}s`;
+
+  // Video
+  loadVideo(epIdx);
+
+  // Scrubber
+  scrubber.max = currentEp.length - 1;
+  scrubber.value = 0;
+  updateFrameReadout(0);
+  updateScrubberFill(0);
+
+  // Buttons
+  btnPlay.disabled = false;
+  btnTrim.disabled = false;
+
+  setStatus('ok', `Episode ${epIdx} loaded — ${currentEp.length} frames.`);
+}
+
+function loadVideo(epIdx) {
+  const key = document.getElementById('video-key-select').value;
+  document.getElementById('no-episode-msg').style.display = 'none';
+  videoEl.style.display = 'block';
+  videoEl.src = `/api/video/${epIdx}?key=${encodeURIComponent(key)}&v=${Date.now()}`;
+  videoEl.load();
+}
+
+function onCameraChange() {
+  if (currentEp) loadVideo(currentEp.episode_index);
+}
+
+// ── Playback ──────────────────────────────────────────────────────────────────
+function getCurrentFrame() {
+  return Math.round(videoEl.currentTime * FPS);
+}
+
+function goToFrame(frame) {
+  if (!currentEp) return;
+  const clamped = Math.max(0, Math.min(frame, currentEp.length - 1));
+  videoEl.currentTime = clamped / FPS;
+  scrubber.value = clamped;
+  updateFrameReadout(clamped);
+  updateScrubberFill(clamped);
+}
+
+function goToEnd() { goToFrame(currentEp ? currentEp.length - 1 : 0); }
+
+function stepFrame(delta) {
+  if (!currentEp) return;
+  goToFrame(getCurrentFrame() + delta);
+}
+
+function togglePlay() {
+  if (!currentEp) return;
+  if (videoEl.paused) { videoEl.play(); } else { videoEl.pause(); }
+}
+
+// ── Scrubber sync ─────────────────────────────────────────────────────────────
+scrubber.addEventListener('input', () => {
+  const f = parseInt(scrubber.value, 10);
+  videoEl.currentTime = f / FPS;
+  updateFrameReadout(f);
+  updateScrubberFill(f);
+});
+
+videoEl.addEventListener('timeupdate', () => {
+  if (document.activeElement === scrubber) return; // user is dragging
+  const f = getCurrentFrame();
+  scrubber.value = f;
+  updateFrameReadout(f);
+  updateScrubberFill(f);
+});
+
+videoEl.addEventListener('play',  () => { btnPlay.textContent = '⏸ Pause'; btnPlay.classList.add('playing'); });
+videoEl.addEventListener('pause', () => { btnPlay.textContent = '▶ Play';  btnPlay.classList.remove('playing'); });
+videoEl.addEventListener('ended', () => { btnPlay.textContent = '▶ Play';  btnPlay.classList.remove('playing'); });
+
+function updateFrameReadout(frame) {
+  if (!currentEp) { frameRead.textContent = '—'; return; }
+  const total = currentEp.length - 1;
+  const t  = (frame / FPS).toFixed(3);
+  const tt = (total  / FPS).toFixed(3);
+  frameRead.innerHTML =
+    `<span class="current">${frame}</span> / ${total} &nbsp;·&nbsp; ${t}s / ${tt}s`;
+}
+
+function updateScrubberFill(frame) {
+  if (!currentEp) return;
+  const pct = (frame / Math.max(1, currentEp.length - 1)) * 100;
+  scrubber.style.setProperty('--pct', pct.toFixed(2) + '%');
+}
+
+// ── Trim ──────────────────────────────────────────────────────────────────────
+function askTrim() {
+  if (!currentEp) return;
+  const frame = getCurrentFrame();
+  if (frame <= 0) { setStatus('warn', 'Cannot trim at frame 0. Move cursor forward.'); return; }
+  if (frame >= currentEp.length - 1) { setStatus('warn', 'Cursor is already at the last frame.'); return; }
+
+  pendingTrimFrame = frame;
+  const newLen = frame + 1;
+  const removed = currentEp.length - newLen;
+  document.getElementById('modal-body').innerHTML =
+    `Keep frames <b>0 → ${frame}</b> (<b>${newLen}</b> frames, ` +
+    `<b>${(newLen/FPS).toFixed(2)}s</b>).<br><br>` +
+    `This will permanently remove <b>${removed} frames</b> ` +
+    `(${(removed/FPS).toFixed(2)}s) from the working copy.<br><br>` +
+    `Parquet data and all 3 video streams will be trimmed.`;
+  document.getElementById('modal-bg').classList.add('active');
+  document.getElementById('modal-confirm').focus();
+}
+
+function closeModal() {
+  document.getElementById('modal-bg').classList.remove('active');
+  pendingTrimFrame = -1;
+}
+
+async function doTrim() {
+  const frame = pendingTrimFrame;  // capture before closeModal resets it to -1
+  closeModal();
+  if (frame < 0 || !currentEp) return;
+
+  showSpinner(`Trimming episode ${currentEp.episode_index} at frame ${frame}…`);
+  setStatus('busy', `Trimming…`);
+  btnTrim.disabled = true;
+  btnFinalize.disabled = true;
+
+  try {
+    const resp = await fetch('/api/trim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ episode_index: currentEp.episode_index, trim_frame: frame }),
+    });
+    const result = await resp.json();
+    hideSpinner();
+
+    if (result.error) {
+      setStatus('err', `Error: ${result.error}`);
+      btnTrim.disabled = false;
+      return;
+    }
+
+    // Update local episode length
+    const ep = episodes.find(e => e.episode_index === currentEp.episode_index);
+    if (ep) ep.length = result.new_length;
+    currentEp = ep;
+    trimmedSet.add(currentEp.episode_index);
+
+    // Update sidebar item
+    refreshSidebarItem(currentEp.episode_index);
+
+    // Update scrubber + readout
+    scrubber.max = result.new_length - 1;
+    document.getElementById('ep-title').textContent =
+      `Episode ${currentEp.episode_index}  ·  ${result.new_length} frames  ·  ${(result.new_length/FPS).toFixed(2)}s`;
+
+    // Reload video to reflect trim
+    loadVideo(currentEp.episode_index);
+    goToFrame(0);
+
+    const warns = result.warnings ? ` ⚠ ${result.warnings.join('; ')}` : '';
+    setStatus('ok',
+      `Trimmed episode ${currentEp.episode_index}: removed ${result.frames_removed} frames → ` +
+      `${result.new_length} frames remaining.${warns}`);
+
+    btnTrim.disabled = false;
+    btnFinalize.disabled = false;
+
+  } catch (err) {
+    hideSpinner();
+    setStatus('err', `Request failed: ${err.message}`);
+    btnTrim.disabled = false;
+    btnFinalize.disabled = false;
+  }
+}
+
+// ── Finalize ──────────────────────────────────────────────────────────────────
+async function finalizeDataset() {
+  if (!confirm(
+    'Finalize dataset?\n\n' +
+    'This rewrites the global "index" column across ALL parquet files ' +
+    'to make frame indices contiguous after trimming.\n\n' +
+    'This may take 30–60 seconds for 150 episodes.'
+  )) return;
+
+  showSpinner('Reindexing all episodes…');
+  setStatus('busy', 'Finalizing dataset (reindexing global frame indices)…');
+  btnFinalize.disabled = true;
+
+  try {
+    const resp = await fetch('/api/finalize', { method: 'POST' });
+    const result = await resp.json();
+    hideSpinner();
+    if (result.error) { setStatus('err', `Finalize error: ${result.error}`); return; }
+    setStatus('ok', `Dataset finalized. Total frames: ${result.total_frames}.`);
+  } catch (err) {
+    hideSpinner();
+    setStatus('err', `Finalize failed: ${err.message}`);
+  }
+
+  btnFinalize.disabled = false;
+}
+
+// ── Spinner ───────────────────────────────────────────────────────────────────
+function showSpinner(msg) { spinnerMsg.textContent = msg; spinner.classList.add('active'); }
+function hideSpinner()    { spinner.classList.remove('active'); }
+
+// ── Status ────────────────────────────────────────────────────────────────────
+function setStatus(type, msg) {
+  statusBar.className = '';
+  statusBar.classList.add(type);
+  statusMsg.textContent = msg;
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (document.getElementById('modal-bg').classList.contains('active')) {
+    if (e.key === 'Escape') closeModal();
+    return;
+  }
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); stepFrame(e.shiftKey ? -10 : -1); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); stepFrame(e.shiftKey ?  10 :  1); }
+  if (e.key === ' ')          { e.preventDefault(); togglePlay(); }
+  if (e.key === 't' || e.key === 'T') { e.preventDefault(); askTrim(); }
+  if (e.key === 'Home') { e.preventDefault(); goToFrame(0); }
+  if (e.key === 'End')  { e.preventDefault(); goToEnd(); }
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+boot();
+</script>
+</body>
+</html>
