@@ -394,6 +394,19 @@ class ComposedCameraSensor(Sensor, SensorServer):
                 config=usb_config, mount_position=mount_position, device_index=device_idx
             )
 
+        elif camera_type == "zed":
+            from gear_sonic.camera.drivers.zed import ZEDConfig, ZEDSensor
+
+            zed_config = ZEDConfig()
+            serial = int(device_id) if device_id else None
+            print(
+                f"Initializing ZED sensor for camera type: {camera_type}"
+                f"{f', serial: {serial}' if serial is not None else ''}"
+            )
+            return ZEDSensor(
+                config=zed_config, mount_position=mount_position, serial_number=serial
+            )
+
         else:
             raise ValueError(f"Unsupported camera type: {camera_type}")
 
