@@ -60,6 +60,79 @@ source .venv_camera/bin/activate
 echo "[INFO] Installing gear_sonic[camera] …"
 uv pip install -e "gear_sonic[camera]"
 
+# ── 4b. Restore pyzed (ZED Python SDK) — only if the ZED SDK is installed ─────
+# gear_sonic[camera] does NOT include pyzed; it is an out-of-band ZED SDK install
+# that the `rm -rf .venv_camera` above wipes on every re-run. The robot subnet
+# usually cannot reach download.stereolabs.com, so prefer the local uv wheel
+# cache (offline), then fall back to the ZED SDK's get_python_api.py, and WARN
+# loudly if neither works (fine for OAK/RealSense ego cameras).
+restore_pyzed() {
+    local vpy="$REPO_ROOT/.venv_camera/bin/python"
+    local sp
+    sp="$("$vpy" -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null)" || return 1
+
+    # Installed ZED SDK version that pyzed MUST match (e.g. 5.3.0). A pyzed built
+    # for a different SDK can import fine and then garble/return wrong frames at
+    # runtime — the exact silent-blank trap we are guarding against.
+    local sdk_ver=""
+    if [ -f /usr/local/zed/zed-config-version.cmake ]; then
+        sdk_ver="$(grep -oE 'PACKAGE_VERSION "[0-9.]+"' /usr/local/zed/zed-config-version.cmake \
+                   | grep -oE '[0-9.]+' | head -n1 || true)"
+    fi
+    matches() { [ -z "$sdk_ver" ] || [ "$1" = "$sdk_ver" ]; }  # dynamic scope sees $sdk_ver
+
+    # Already importable and version-matching? Done.
+    local cur
+    cur="$("$vpy" -c 'import pyzed.sl as sl; print(sl.Camera.get_sdk_version())' 2>/dev/null || true)"
+    if [ -n "$cur" ] && matches "$cur"; then
+        echo "[OK] pyzed already importable (SDK $cur)."; return 0
+    fi
+    [ -n "$cur" ] && echo "[WARN] pyzed present but reports SDK '$cur' != installed '$sdk_ver' — replacing."
+
+    # Offline: pick the cp310 cache build whose SDK version matches the installed SDK.
+    local so src chosen="" v
+    while IFS= read -r so; do
+        [ -n "$so" ] || continue
+        src="$(dirname "$(dirname "$so")")"   # .../<archive>/pyzed/sl…so -> <archive>
+        [ -d "$src/pyzed" ] || continue
+        v="$(PYTHONPATH="$src" "$vpy" -c 'import pyzed.sl as sl; print(sl.Camera.get_sdk_version())' 2>/dev/null || true)"
+        if [ -n "$v" ] && matches "$v"; then chosen="$src"; break; fi
+    done < <(find "$HOME/.cache/uv" -path '*pyzed*' -name 'sl.cpython-310-*-linux-gnu.so' 2>/dev/null || true)
+
+    if [ -n "$chosen" ]; then
+        rm -rf "$sp/pyzed" "$sp"/pyzed-*.dist-info 2>/dev/null || true
+        cp -r "$chosen/pyzed" "$sp/" 2>/dev/null || true
+        cp -r "$chosen"/pyzed-*.dist-info "$sp/" 2>/dev/null || true
+        local nv
+        nv="$("$vpy" -c 'import pyzed.sl as sl; print(sl.Camera.get_sdk_version())' 2>/dev/null || true)"
+        if [ -n "$nv" ] && matches "$nv"; then
+            echo "[OK] pyzed restored from uv cache (SDK $nv): $chosen"; return 0
+        fi
+    fi
+
+    # Online fallback: ZED SDK's installer (needs pip + reachable Stereolabs).
+    if [ -f /usr/local/zed/get_python_api.py ]; then
+        "$vpy" -m ensurepip >/dev/null 2>&1 || true
+        if "$vpy" /usr/local/zed/get_python_api.py >/dev/null 2>&1; then
+            nv="$("$vpy" -c 'import pyzed.sl as sl; print(sl.Camera.get_sdk_version())' 2>/dev/null || true)"
+            if [ -n "$nv" ] && matches "$nv"; then
+                echo "[OK] pyzed installed via /usr/local/zed/get_python_api.py (SDK $nv)."; return 0
+            fi
+        fi
+    fi
+    return 1
+}
+
+if [ -d /usr/local/zed ]; then
+    echo "[INFO] ZED SDK present — ensuring pyzed is in .venv_camera (for a ZED ego camera) …"
+    if ! restore_pyzed; then
+        echo "[WARN] pyzed: expected=importable in .venv_camera, got=missing, fallback=skipped."
+        echo "       A ZED ego_view camera will FAIL until pyzed is installed. Offline:"
+        echo "       copy a cp310 pyzed from ~/.cache/uv into the venv site-packages;"
+        echo "       online: run /usr/local/zed/get_python_api.py with .venv_camera/bin/python."
+    fi
+fi
+
 echo ""
 echo "══════════════════════════════════════════════════════════════"
 echo "  Camera server venv setup complete!"
