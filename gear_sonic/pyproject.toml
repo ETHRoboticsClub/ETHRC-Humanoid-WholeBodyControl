@@ -98,6 +98,7 @@ training = [
     "transformers>=4.56.2",
     "accelerate>=1.3.0",
     "tensorboard",
+    "smpl_sim @ git+https://github.com/ZhengyiLuo/SMPLSim.git",
 ]
 # Rerun-based visualization: pairs run_rerun_viewer.py (PC) with
 # run_rerun_camera_publisher.py (G1 Orin). pyzed is NOT included — it ships
