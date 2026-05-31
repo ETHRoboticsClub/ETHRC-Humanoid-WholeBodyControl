@@ -166,9 +166,9 @@ fi
 echo ""
 read -rp "  Add a left-wrist camera? [y/N]: " ADD_LEFT
 if [[ "$ADD_LEFT" =~ ^[Yy]$ ]]; then
-    read -rp "  Left-wrist camera type [oak]: " LEFT_TYPE
+    read -rp "  Left-wrist camera type (oak, oak_mono, realsense, usb) [oak]: " LEFT_TYPE
     LEFT_TYPE="${LEFT_TYPE:-oak}"
-    read -rp "  Left-wrist device ID (MxID): " LEFT_DEVICE_ID
+    read -rp "  Left-wrist device ID (MxID or /dev/video index): " LEFT_DEVICE_ID
     CAMERA_ARGS="${CAMERA_ARGS} --left-wrist-camera ${LEFT_TYPE}"
     if [ -n "$LEFT_DEVICE_ID" ]; then
         CAMERA_ARGS="${CAMERA_ARGS} --left-wrist-device-id ${LEFT_DEVICE_ID}"
@@ -179,9 +179,9 @@ fi
 echo ""
 read -rp "  Add a right-wrist camera? [y/N]: " ADD_RIGHT
 if [[ "$ADD_RIGHT" =~ ^[Yy]$ ]]; then
-    read -rp "  Right-wrist camera type [oak]: " RIGHT_TYPE
+    read -rp "  Right-wrist camera type (oak, oak_mono, realsense, usb) [oak]: " RIGHT_TYPE
     RIGHT_TYPE="${RIGHT_TYPE:-oak}"
-    read -rp "  Right-wrist device ID (MxID): " RIGHT_DEVICE_ID
+    read -rp "  Right-wrist device ID (MxID or /dev/video index): " RIGHT_DEVICE_ID
     CAMERA_ARGS="${CAMERA_ARGS} --right-wrist-camera ${RIGHT_TYPE}"
     if [ -n "$RIGHT_DEVICE_ID" ]; then
         CAMERA_ARGS="${CAMERA_ARGS} --right-wrist-device-id ${RIGHT_DEVICE_ID}"
