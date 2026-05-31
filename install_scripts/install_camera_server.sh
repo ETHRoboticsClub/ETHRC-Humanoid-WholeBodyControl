@@ -44,7 +44,7 @@ echo "[OK] uv $(uv --version)"
 # ── 2. Install a uv-managed Python 3.10 ─────────────────────────────────────
 echo "[INFO] Installing uv-managed Python 3.10 …"
 uv python install 3.10
-MANAGED_PY="$(uv python find --no-project 3.10)"
+MANAGED_PY="$(uv python find --no-project --managed-python 3.10)"
 echo "[OK] Using Python: $MANAGED_PY"
 
 # ── 3. Clean previous venv (if any) ─────────────────────────────────────────
