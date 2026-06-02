@@ -94,21 +94,23 @@ class G1GripperInverseKinematicsSolver(Solver):
     def _get_index_close_q_desired(self):
         q_desired = np.zeros(7)
 
-        amp0 = 0.5
+        amp0 = 0.4  # thumb opposition (limit ~1.05); higher = thumb swings further across
         if self.side == "L":
             q_desired[0] -= amp0
         else:
             q_desired[0] += amp0
 
-        amp = 0.7
+        amp = 0.7  # thumb flex/curl (q1/q2) — this is what bends the thumb toward the finger
 
         q_desired[1] += amp
         q_desired[2] += amp
 
-        ampA1 = 1.5
-        ampB1 = 1.5
-        ampA2 = 0.6
-        ampB2 = 1.5
+        # Curl the finger that opposes the thumb (motors 5/6); leave the other
+        # finger (motors 3/4) open for a clean two-finger pinch.
+        ampA1 = 0.0
+        ampB1 = 0.0
+        ampA2 = 1.2
+        ampB2 = 1.2
 
         q_desired[3] -= ampA1
         q_desired[4] -= ampB1

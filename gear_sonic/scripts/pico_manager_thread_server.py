@@ -503,11 +503,11 @@ def generate_finger_data(hand: str, trigger: float, grip: float) -> np.ndarray:
     fingertips = np.zeros([25, 4, 4])
 
     thumb = 0
-    middle = 10
+    index = 5
     # Control thumb based on shoulder button state (index 4 is thumb tip)
     fingertips[4 + thumb, 0, 3] = 1.0  # open thumb
     if trigger > 0.5:
-        fingertips[4 + middle, 0, 3] = 1.0  # close middle
+        fingertips[4 + index, 0, 3] = 1.0  # pinch index to thumb
 
     return fingertips
 
