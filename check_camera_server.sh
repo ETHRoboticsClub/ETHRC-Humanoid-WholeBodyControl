@@ -46,7 +46,7 @@ else
     fi
 fi
 
-# 3. Wrist video nodes present (left=/dev/video0, right=/dev/video2).
+# 3. Wrist video nodes present (left=/dev/video6, right=/dev/video2).
 for node in /dev/video0 /dev/video2; do
     if [ -e "$node" ]; then
         pass "wrist node $node present."

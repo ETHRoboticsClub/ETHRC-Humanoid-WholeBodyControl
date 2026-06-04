@@ -164,3 +164,73 @@ When done, reply to the workstation session with:
 - and whether `zed`/`usb` camera types were present in this build.
 
 That's enough for us to launch `launch_data_collection.py` with confidence.
+
+---
+
+## ⚠️ USB index fragility — wrist `device-id`s drift on reboot/replug (2026-06-04)
+
+**This is the #1 recurring failure for this server.** The `usb` wrist cameras are
+addressed by their `/dev/videoN` *capture-node index*, but those indices are
+**not stable** — they shuffle whenever USB re-enumerates (reboot, replug, hub
+change, even the ZED grabbing nodes first). In one session the wrist capture node
+was observed at `0`→`2`→`3`→`4` across a handful of replugs, and the ZED-M took
+`/dev/video0,1`. A `device-id` baked into the systemd unit that was correct
+yesterday can silently point at the **wrong device** (or at the ZED) today.
+
+### Symptom
+Service is `active` and a listener is bound on `5555`, **but no frames publish**
+(`check_camera_server.sh` → "server published NO frames"). The journal shows the
+worker spinning on `can't open camera by index` / `Camera index out of range`
+(index points at the ZED or a gone node) or `USB camera read failed: ret=False` /
+`VIDIOC_REQBUFS ... No such device (errno 19)` (device vanished). Because publish
+is all-or-nothing, one bad wrist index kills *all three* streams.
+
+### Fix recipe (the one that worked, 2026-06-04)
+1. **Find the real capture indices** — each Innomaker exposes two nodes; the
+   **lower** one is the capture node:
+   ```bash
+   v4l2-ctl --list-devices    # ZED-M => video0,1 ; each Innomaker => e.g. video2,3 and video4,5
+   ```
+   Confirm BOTH wrist cams open *simultaneously* (the real USB-bandwidth test —
+   they must negotiate MJPG, not uncompressed YUYV, on a shared hub):
+   ```bash
+   .venv_camera/bin/python - <<'PY'
+   import cv2
+   for i in (2,4):
+       c=cv2.VideoCapture(i,cv2.CAP_V4L2); ok,_=c.read(); print(i, c.isOpened(), ok); c.release()
+   PY
+   ```
+2. **Update the device-ids** in the systemd **drop-in** (NOT the base unit — the
+   drop-in's `ExecStart=` override wins). On this G1 the live config lives at:
+   ```
+   /etc/systemd/system/composed_camera_server.service.d/zed.conf
+   ```
+   Set `--left-wrist-device-id <N>` / `--right-wrist-device-id <M>` to the capture
+   indices found above. (Convention here: left=4, right=2 — swap if mirrored.)
+3. **Reload + HARD restart.** A plain `restart` is not enough: editing `ExecStart`
+   then `daemon-reload` makes systemd log *"Current command vanished from the unit
+   file"* and **detach from the still-running old PID without killing it** — the
+   stale process keeps holding port 5555 and the cameras, so nothing changes. The
+   old worker also ignores `SIGTERM` (it just loops on read errors). Force it:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl stop composed_camera_server.service
+   sudo pkill -9 -f 'gear_sonic.camera.composed_camera'   # kill the stuck old PID
+   sudo systemctl start composed_camera_server.service
+   ```
+4. **Verify** the process really cycled and frames flow:
+   ```bash
+   systemctl show composed_camera_server.service -p MainPID -p ExecMainStartTimestamp
+   pgrep -af composed_camera     # confirm the args show the NEW device-ids
+   bash check_camera_server.sh   # expect: ego_view:OK left_wrist:OK right_wrist:OK
+   ```
+
+### Hardware notes
+- Keep the **ZED-M on a USB 3.0 path** (must enumerate as `2b03:f682`; `2b03:f681`
+  alone = USB 2.0 / unseated → ZED stream fails). The preflight checks this.
+- Two 1080p wrist cams on a single shared hub can exceed USB-2.0 bandwidth if a
+  cam falls back to uncompressed YUYV; splitting them across two hubs (Apple +
+  Realtek here) resolved the "second camera won't enumerate" case.
+- A more robust long-term fix than raw indices would be **udev by-id symlinks**
+  (or addressing the wrist cams by USB serial/path) so the mapping survives
+  re-enumeration — not yet implemented in this build.
