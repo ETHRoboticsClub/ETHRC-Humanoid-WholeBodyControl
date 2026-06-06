@@ -115,6 +115,10 @@ class ComposedCameraSensor(Sensor, SensorServer):
         self.error_events: dict[str, threading.Event] = {}
         self.error_messages: dict[str, str] = {}
         self._observation_spaces: dict[str, Any] = {}
+        # Frames held per camera until every camera has contributed one, so a
+        # transient phase offset between free-running cameras waits for the
+        # laggard instead of dropping the whole publish (see read()).
+        self._pending_merge: dict[str, Any] = {}
 
         camera_configs = self._get_camera_configs()
 
@@ -419,18 +423,28 @@ class ComposedCameraSensor(Sensor, SensorServer):
                 raise RuntimeError(error_msg)
 
     def read(self):
-        """Read frames from all cameras. Returns None unless ALL cameras have frames."""
+        """Return a merged message only when every camera has contributed a frame.
+
+        Frames that arrive before their siblings are held in ``_pending_merge``
+        (refreshed to the latest each poll) instead of being discarded, so a
+        transient phase offset between free-running cameras just waits for the
+        laggard rather than dropping the whole publish. Each camera's frame is
+        consumed exactly once — no reuse across publishes. A dead camera never
+        completes the set, so the server still emits nothing, preserving the
+        all-or-nothing health signal.
+        """
         self._check_for_errors()
 
         expected_cameras = set(self.camera_queues.keys())
-        message = {}
 
         for mount_position, camera_queue in self.camera_queues.items():
             frame = self._get_latest_from_queue(camera_queue)
             if frame is not None:
-                message[mount_position] = frame
+                self._pending_merge[mount_position] = frame
 
-        if set(message.keys()) == expected_cameras:
+        if set(self._pending_merge.keys()) == expected_cameras:
+            message = self._pending_merge
+            self._pending_merge = {}
             return message
         return None
 
@@ -471,35 +485,42 @@ class ComposedCameraSensor(Sensor, SensorServer):
         return img_schema.serialize()
 
     def run_server(self):
-        """Main server loop — reads, serializes and publishes frames."""
+        """Main server loop — reads, serializes and publishes frames.
+
+        Publishes a merged frame as soon as all cameras are ready, paced to at
+        most ``config.fps``. On a transient miss (a camera momentarily not yet
+        ready) it retries quickly instead of skipping a whole frame interval, so
+        the merged rate tracks the cameras rather than collapsing toward half.
+        """
         idx = 0
-        server_start_time = time.monotonic()
         fps_print_time = time.monotonic()
         frame_interval = 1.0 / self.config.fps
+        next_publish_time = time.monotonic()
 
         while True:
-            target_time = server_start_time + (idx + 1) * frame_interval
-
             message = self.read()
-            if message:
-                if self.config.test_latency:
-                    read_qr_code(message)
+            if message is None:
+                # Not all cameras ready yet — wait briefly for the laggard
+                # instead of forfeiting this whole frame interval.
+                time.sleep(0.001)
+                continue
 
-                serialized_message = self.serialize_message(message)
-                self.send_message(serialized_message)
-                idx += 1
+            # Pace to at most config.fps (the cameras usually set the real rate).
+            now = time.monotonic()
+            if now < next_publish_time:
+                time.sleep(next_publish_time - now)
+            next_publish_time = max(next_publish_time + frame_interval, time.monotonic())
 
-                if idx % 10 == 0:
-                    print(f"Image sending FPS: {10 / (time.monotonic() - fps_print_time):.2f}")
-                    fps_print_time = time.monotonic()
+            if self.config.test_latency:
+                read_qr_code(message)
 
-            current_time = time.monotonic()
-            sleep_time = target_time - current_time
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
-                if not message:
-                    idx += 1
+            serialized_message = self.serialize_message(message)
+            self.send_message(serialized_message)
+            idx += 1
+
+            if idx % 10 == 0:
+                print(f"Image sending FPS: {10 / (time.monotonic() - fps_print_time):.2f}", flush=True)
+                fps_print_time = time.monotonic()
 
     def observation_space(self):
         try:
