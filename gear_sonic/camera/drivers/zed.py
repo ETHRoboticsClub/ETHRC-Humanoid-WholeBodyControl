@@ -4,10 +4,11 @@ Thin adapter that lets the gear_sonic composed-camera orchestrator drive a
 ZED camera the same way it drives RealSense / OAK / USB cameras. Modeled on
 ``decoupled_wbc.control.sensor.zed.ZedSensor``.
 
-Emits rectified left and right RGB frames. On the wire, the keys are::
-
-    {mount_position}        -> left  RGB
-    {mount_position}_right  -> right RGB
+Emits the rectified left RGB frame as ``{mount_position}``. The right eye is
+opt-in (``ZEDConfig.emit_right_view``) and, when enabled, is published as
+``{mount_position}_right``. Data collection records only the mono ego view, so
+the right eye is off by default to avoid wasting encode / USB / ZMQ bandwidth
+on the Orin for an unrecorded stream.
 """
 
 import time
@@ -47,9 +48,13 @@ class ZEDConfig:
     """Configuration for the Stereolabs ZED camera."""
 
     resolution: str = "HD720"
-    output_image_dim: tuple[int, int] = (640, 360)  # (width, height)
+    # (width, height). 640x480 to match the ego_view dataset schema
+    # (features_sonic_vla.EGO_VIEW_HEIGHT/WIDTH); the native 16:9 HD720 frame is
+    # resized to 4:3 in read(), consistent for both collection and inference.
+    output_image_dim: tuple[int, int] = (640, 480)
     fps: int = 30
     depth_mode: str = "NONE"  # NONE saves GPU when depth isn't used
+    emit_right_view: bool = False  # also publish right eye as {mount}_right; off = mono ego only
 
 
 class ZEDSensor(Sensor):
@@ -92,24 +97,26 @@ class ZEDSensor(Sensor):
             return None
 
         capture_time = time.time()
-        self.camera.retrieve_image(self._left_mat, sl.VIEW.LEFT)
-        self.camera.retrieve_image(self._right_mat, sl.VIEW.RIGHT)
-
-        left_bgra = self._left_mat.get_data()
-        right_bgra = self._right_mat.get_data()
-        left_rgb = cv2.cvtColor(left_bgra, cv2.COLOR_BGRA2RGB)
-        right_rgb = cv2.cvtColor(right_bgra, cv2.COLOR_BGRA2RGB)
-
         w, h = self.config.output_image_dim
+
+        self.camera.retrieve_image(self._left_mat, sl.VIEW.LEFT)
+        left_rgb = cv2.cvtColor(self._left_mat.get_data(), cv2.COLOR_BGRA2RGB)
         if (left_rgb.shape[1], left_rgb.shape[0]) != (w, h):
             left_rgb = cv2.resize(left_rgb, (w, h), interpolation=cv2.INTER_AREA)
-            right_rgb = cv2.resize(right_rgb, (w, h), interpolation=cv2.INTER_AREA)
 
-        right_key = f"{self.mount_position}_right"
-        return {
-            "timestamps": {self.mount_position: capture_time, right_key: capture_time},
-            "images": {self.mount_position: left_rgb, right_key: right_rgb},
-        }
+        timestamps = {self.mount_position: capture_time}
+        images = {self.mount_position: left_rgb}
+
+        if self.config.emit_right_view:
+            self.camera.retrieve_image(self._right_mat, sl.VIEW.RIGHT)
+            right_rgb = cv2.cvtColor(self._right_mat.get_data(), cv2.COLOR_BGRA2RGB)
+            if (right_rgb.shape[1], right_rgb.shape[0]) != (w, h):
+                right_rgb = cv2.resize(right_rgb, (w, h), interpolation=cv2.INTER_AREA)
+            right_key = f"{self.mount_position}_right"
+            timestamps[right_key] = capture_time
+            images[right_key] = right_rgb
+
+        return {"timestamps": timestamps, "images": images}
 
     def serialize(self, data: dict[str, Any]) -> dict[str, Any]:
         from gear_sonic.camera.sensor_server import ImageMessageSchema
@@ -123,9 +130,10 @@ class ZEDSensor(Sensor):
             return None
         w, h = self.config.output_image_dim
         box = gym.spaces.Box(low=0, high=255, shape=(h, w, 3), dtype=np.uint8)
-        return gym.spaces.Dict(
-            {self.mount_position: box, f"{self.mount_position}_right": box}
-        )
+        spaces = {self.mount_position: box}
+        if self.config.emit_right_view:
+            spaces[f"{self.mount_position}_right"] = box
+        return gym.spaces.Dict(spaces)
 
     def close(self):
         if hasattr(self, "camera") and self.camera.is_opened():
