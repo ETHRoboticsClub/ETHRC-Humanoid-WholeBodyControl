@@ -38,9 +38,38 @@ VIDEO_KEYS = [
     "observation.images.ego_view_right_mono",
 ]
 
+# ── Training-key constants ─────────────────────────────────────────────────────
+
+LOCOMANIP_KEY = "action.locomanip"
+# action.eef(14) + teleop.navigate_command(3) + teleop.base_height_command(1)
+LOCOMANIP_FEATURE = {
+    "dtype": "float64",
+    "shape": [18],
+    "names": [
+        "left_wrist_pos",
+        "left_wrist_abs_quat",
+        "right_wrist_pos",
+        "right_wrist_abs_quat",
+        "lin_vel_x",
+        "lin_vel_y",
+        "ang_vel_z",
+        "base_height_command",
+    ],
+}
+LOCOMANIP_MODALITY = {
+    "locomanip_left_wrist_pos":  {"start": 0,  "end": 3,  "original_key": LOCOMANIP_KEY},
+    "locomanip_left_wrist_quat": {"start": 3,  "end": 7,  "original_key": LOCOMANIP_KEY, "rotation_type": "quaternion"},
+    "locomanip_right_wrist_pos": {"start": 7,  "end": 10, "original_key": LOCOMANIP_KEY},
+    "locomanip_right_wrist_quat":{"start": 10, "end": 14, "original_key": LOCOMANIP_KEY, "rotation_type": "quaternion"},
+    "locomanip_navigate":        {"start": 14, "end": 17, "original_key": LOCOMANIP_KEY},
+    "locomanip_base_height":     {"start": 17, "end": 18, "original_key": LOCOMANIP_KEY},
+}
+
 # ── Global state (set at startup) ──────────────────────────────────────────────
 
-DATASET_DIR: str = ""
+SOURCE_DIR: str = ""    # original raw dataset (no suffix)
+DATASET_DIR: str = ""   # working copy for trimming (<source>-trimmed)
+OUTPUTS_DIR: str = os.path.join(_PROJECT, "outputs")
 
 app = Flask(__name__)
 
@@ -287,11 +316,170 @@ def api_finalize():
     return jsonify({"success": True, "total_frames": global_idx})
 
 
+# ── Dataset management ────────────────────────────────────────────────────────
+
+
+@app.route("/api/datasets")
+def api_datasets():
+    """List raw datasets in outputs/ (excludes -trimmed and -augmented copies)."""
+    if not os.path.exists(OUTPUTS_DIR):
+        return jsonify([])
+    entries = []
+    for name in sorted(os.listdir(OUTPUTS_DIR)):
+        if name.endswith("-trimmed") or name.endswith("-augmented"):
+            continue
+        full_path = os.path.join(OUTPUTS_DIR, name)
+        if not os.path.isdir(full_path):
+            continue
+        if not os.path.exists(os.path.join(full_path, "meta", "info.json")):
+            continue
+        entries.append({
+            "name": name,
+            "active": full_path == SOURCE_DIR,
+            "has_trimmed": os.path.exists(full_path + "-trimmed"),
+            "has_augmented": os.path.exists(full_path + "-augmented"),
+        })
+    return jsonify(entries)
+
+
+@app.route("/api/select_dataset", methods=["POST"])
+def api_select_dataset():
+    """Switch the active source dataset; creates the -trimmed working copy if missing."""
+    global SOURCE_DIR, DATASET_DIR
+    data = request.json
+    source_name = data.get("source_name", "")
+    source_path = os.path.join(OUTPUTS_DIR, source_name)
+
+    if not os.path.isdir(source_path):
+        return jsonify({"error": f"Dataset not found: {source_name}"}), 400
+    if not os.path.exists(os.path.join(source_path, "meta", "info.json")):
+        return jsonify({"error": f"Not a valid LeRobot dataset: {source_name}"}), 400
+
+    trimmed_path = source_path + "-trimmed"
+    created = not os.path.exists(trimmed_path)
+    if created:
+        shutil.copytree(source_path, trimmed_path)
+
+    SOURCE_DIR = source_path
+    DATASET_DIR = trimmed_path
+
+    return jsonify({"success": True, "source_name": source_name, "created_trimmed": created})
+
+
+@app.route("/api/state")
+def api_state():
+    """Return the current active source info for UI initialisation."""
+    source_name = os.path.basename(SOURCE_DIR) if SOURCE_DIR else None
+    return jsonify({
+        "source_name": source_name,
+        "has_trimmed":   bool(SOURCE_DIR) and os.path.exists(SOURCE_DIR + "-trimmed"),
+        "has_augmented": bool(SOURCE_DIR) and os.path.exists(SOURCE_DIR + "-augmented"),
+    })
+
+
+# ── Training keys ─────────────────────────────────────────────────────────────
+
+
+def _build_locomanip_column(table: pa.Table) -> pa.Array:
+    eef    = np.array(table.column("action.eef").to_pylist(), dtype=np.float64)               # (N, 14)
+    nav    = np.array(table.column("teleop.navigate_command").to_pylist(), dtype=np.float64)  # (N, 3)
+    height = np.array(table.column("teleop.base_height_command").to_pylist(), dtype=np.float64).reshape(-1, 1)  # (N, 1)
+    combined = np.concatenate([eef, nav, height], axis=1)                                     # (N, 18)
+    return pa.array(combined.tolist())
+
+
+def _do_create_training_keys(target_dir: str) -> dict:
+    """Add action.locomanip to every parquet in target_dir and update its meta files."""
+    episodes = []
+    with open(os.path.join(target_dir, "meta", "episodes.jsonl")) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                episodes.append(json.loads(line))
+    episodes.sort(key=lambda e: e["episode_index"])
+
+    if not episodes:
+        return {"error": "No episodes found in target dataset."}
+
+    first_path = os.path.join(
+        target_dir, "data", "chunk-000",
+        f"episode_{episodes[0]['episode_index']:06d}.parquet",
+    )
+    if LOCOMANIP_KEY in pq.read_table(first_path).schema.names:
+        return {"error": f"'{LOCOMANIP_KEY}' already exists in this dataset."}
+
+    stats_dict: dict[int, dict] = {}
+    with open(os.path.join(target_dir, "meta", "episodes_stats.jsonl")) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entry = json.loads(line)
+                stats_dict[entry["episode_index"]] = entry["stats"]
+
+    errors = []
+    for ep in episodes:
+        ep_idx = ep["episode_index"]
+        path = os.path.join(target_dir, "data", "chunk-000", f"episode_{ep_idx:06d}.parquet")
+        try:
+            table = pq.read_table(path)
+            table = table.append_column(LOCOMANIP_KEY, _build_locomanip_column(table))
+            pq.write_table(table, path, compression="snappy")
+            if ep_idx in stats_dict:
+                stats_dict[ep_idx][LOCOMANIP_KEY] = _col_stats(table, LOCOMANIP_KEY)
+        except Exception as exc:
+            errors.append(f"Episode {ep_idx}: {exc}")
+
+    with open(os.path.join(target_dir, "meta", "episodes_stats.jsonl"), "w") as f:
+        for ep_idx in sorted(stats_dict.keys()):
+            f.write(json.dumps({"episode_index": ep_idx, "stats": stats_dict[ep_idx]}) + "\n")
+
+    info_path = os.path.join(target_dir, "meta", "info.json")
+    with open(info_path) as f:
+        info = json.load(f)
+    info["features"][LOCOMANIP_KEY] = LOCOMANIP_FEATURE
+    with open(info_path, "w") as f:
+        json.dump(info, f, indent=4)
+
+    modality_path = os.path.join(target_dir, "meta", "modality.json")
+    with open(modality_path) as f:
+        modality = json.load(f)
+    modality["action"].update(LOCOMANIP_MODALITY)
+    with open(modality_path, "w") as f:
+        json.dump(modality, f, indent=4)
+
+    return {"processed": len(episodes) - len(errors), "errors": errors}
+
+
+@app.route("/api/create_training_keys", methods=["POST"])
+def api_create_training_keys():
+    if not SOURCE_DIR or not DATASET_DIR:
+        return jsonify({"error": "No dataset selected. Pick a dataset first."}), 400
+
+    augmented_dir = SOURCE_DIR + "-augmented"
+    augmented_name = os.path.basename(augmented_dir)
+
+    if os.path.exists(augmented_dir):
+        return jsonify({"error": f"Augmented dataset already exists: {augmented_name}"}), 400
+
+    shutil.copytree(DATASET_DIR, augmented_dir)
+
+    result = _do_create_training_keys(augmented_dir)
+    if "error" in result:
+        shutil.rmtree(augmented_dir)
+        return jsonify(result), 400
+
+    resp = {"success": True, "processed": result["processed"], "augmented_name": augmented_name}
+    if result["errors"]:
+        resp["errors"] = result["errors"]
+    return jsonify(resp)
+
+
 # ── Startup ────────────────────────────────────────────────────────────────────
 
 
 def setup(source_dir: str, output_dir: str) -> None:
-    global DATASET_DIR
+    global SOURCE_DIR, DATASET_DIR
+    SOURCE_DIR = source_dir
     DATASET_DIR = output_dir
 
     if not os.path.exists(output_dir):

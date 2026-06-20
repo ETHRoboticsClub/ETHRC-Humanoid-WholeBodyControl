@@ -47,18 +47,34 @@ Move to the right first, then pick up the cardboard box located on the counterto
 Turn right, move in front of the water bottle on the counter in front of the fridge, pick up the water bottle, then turn left, walk to the sink, and place the water bottle into the sink.
 
 
-### Trim the dataset if needed : 
+### Trim / augment a dataset
+
+#### First time only — create the conda environment
+```shell
+bash trim_dashboard/setup_env.sh
+```
+
+This creates a `lerobot-trim` conda environment with Flask, PyArrow, NumPy, and huggingface_hub.
+
+#### Fix output folder permissions (needed when dataset was created inside Docker)
+```shell
+sudo chown -R $USER outputs/
+```
+
+#### Run the dashboard
 ```shell
 conda activate lerobot-trim
-```
-Add rights to modify the dataset (because was created from docker container) : 
-```shell 
-sudo chown rguntz /home/rguntz/Desktop/humanoid/ETHRC-Humanoid-WholeBodyControl/outputs/
-```
- 
-Then run the dashboard : 
-```shell
-cd /home/rguntz/Desktop/humanoid/ETHRC-Humanoid-WholeBodyControl
 python trim_dashboard/app.py
-``
+```
+
+Open http://localhost:5000 in your browser.
+
+- **Select a dataset** from the dropdown — a `-trimmed` working copy is created automatically on first use.
+- **Trim** episodes frame-by-frame, then click **Finalize (reindex)** when done.
+- **Create Training Keys** generates a separate `-augmented` copy with the combined `action.locomanip` column (EEF + navigation commands) ready for training.
+- **Upload** the resulting dataset to Hugging Face:
+```shell
+hf auth login
+hf upload-large-folder ETHRC-humanoid/<dataset-name> outputs/<dataset-name>-augmented --repo-type dataset
+```
 

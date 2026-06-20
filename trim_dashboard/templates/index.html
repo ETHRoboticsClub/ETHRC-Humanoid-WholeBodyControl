@@ -31,6 +31,27 @@
   #header .dataset-label { color: #666; font-size: 11px; flex: 1; }
   #header .dataset-label span { color: #4ec9b0; }
 
+  #dataset-select {
+    background: #2a2a2a;
+    color: #d4d4d4;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    max-width: 320px;
+  }
+  #dataset-select:focus { outline: 1px solid #4caf50; }
+  #dataset-badges { display: flex; gap: 4px; align-items: center; font-size: 10px; }
+  .badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .badge-trimmed   { background: #2a3a1a; color: #8bc34a; border: 1px solid #4a6a2a; }
+  .badge-augmented { background: #2a1f3a; color: #c8a8ff; border: 1px solid #6a3fa0; }
+
   /* ── Layout ── */
   #content {
     display: flex;
@@ -246,6 +267,19 @@
   }
   #btn-finalize:hover { background: #1e4570; }
 
+  #btn-training-keys {
+    background: #2a1f3a;
+    border-color: #6a3fa0;
+    color: #c8a8ff;
+  }
+  #btn-training-keys:hover { background: #35274a; }
+  #btn-training-keys.done {
+    background: #1a3a2a;
+    border-color: #3a8a5a;
+    color: #80ffb0;
+    cursor: default;
+  }
+
   .sep {
     width: 1px;
     height: 20px;
@@ -333,7 +367,12 @@
 <!-- ── Header ── -->
 <div id="header">
   <h1>Episode Trim Dashboard</h1>
-  <div class="dataset-label">Working copy: <span id="dataset-path-label">—</span></div>
+  <select id="dataset-select" onchange="switchDataset(this.value)" title="Select source dataset">
+    <option value="">— select dataset —</option>
+  </select>
+  <div id="dataset-badges"></div>
+  <div class="dataset-label" style="flex:1"></div>
+  <button id="btn-training-keys" onclick="createTrainingKeys()" disabled>⚙ Create Training Keys</button>
   <button id="btn-finalize" onclick="finalizeDataset()" disabled>Finalize (reindex)</button>
 </div>
 
@@ -433,15 +472,99 @@ const btnFinalize = document.getElementById('btn-finalize');
 const spinner   = document.getElementById('spinner');
 const spinnerMsg = document.getElementById('spinner-msg');
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
-async function boot() {
+// ── Dataset management ────────────────────────────────────────────────────────
+let _datasets = [];  // cached list from /api/datasets
+
+async function loadDatasets() {
+  const resp = await fetch('/api/datasets');
+  _datasets = await resp.json();
+
+  const sel = document.getElementById('dataset-select');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— select dataset —</option>';
+  for (const ds of _datasets) {
+    const opt = document.createElement('option');
+    opt.value = ds.name;
+    opt.textContent = ds.name;
+    if (ds.active) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  // Restore previous selection if still in list
+  if (current && _datasets.find(d => d.name === current)) sel.value = current;
+  updateBadges();
+}
+
+function updateBadges() {
+  const sel = document.getElementById('dataset-select');
+  const ds = _datasets.find(d => d.name === sel.value);
+  const container = document.getElementById('dataset-badges');
+  container.innerHTML = '';
+  if (!ds) return;
+  if (ds.has_trimmed)   container.innerHTML += '<span class="badge badge-trimmed">trimmed</span>';
+  if (ds.has_augmented) container.innerHTML += '<span class="badge badge-augmented">augmented</span>';
+}
+
+async function switchDataset(sourceName) {
+  if (!sourceName) return;
+  showSpinner(`Selecting "${sourceName}" — creating working copy if needed…`);
+  setStatus('busy', `Switching to ${sourceName}…`);
+  document.getElementById('btn-training-keys').disabled = true;
+  document.getElementById('btn-finalize').disabled = true;
+
+  try {
+    const resp = await fetch('/api/select_dataset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_name: sourceName }),
+    });
+    const result = await resp.json();
+    hideSpinner();
+
+    if (result.error) { setStatus('err', `Error: ${result.error}`); return; }
+
+    if (result.created_trimmed) {
+      setStatus('ok', `Created working copy "${sourceName}-trimmed". Loading episodes…`);
+    }
+
+    await loadDatasets();
+    await reloadEpisodes();
+    document.getElementById('btn-training-keys').disabled = false;
+
+  } catch (err) {
+    hideSpinner();
+    setStatus('err', `Switch failed: ${err.message}`);
+  }
+}
+
+async function reloadEpisodes() {
   const resp = await fetch('/api/episodes');
   episodes = await resp.json();
+  trimmedSet.clear();
+  currentEp = null;
+  videoEl.style.display = 'none';
+  document.getElementById('no-episode-msg').style.display = 'flex';
   document.getElementById('ep-count').textContent = episodes.length;
-  document.getElementById('dataset-path-label').textContent =
-    window.location.hostname + ':' + window.location.port + ' (trimmed copy)';
+  document.getElementById('ep-title').textContent = '— no episode selected —';
+  btnPlay.disabled = true;
+  btnTrim.disabled = true;
   renderSidebar();
-  setStatus('ready', `Loaded ${episodes.length} episodes. Select one to start.`);
+  setStatus('ok', `Loaded ${episodes.length} episodes. Select one to start.`);
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+async function boot() {
+  await loadDatasets();
+  // Check if a dataset is already active (started via CLI --source flag)
+  const stateResp = await fetch('/api/state');
+  const state = await stateResp.json();
+  if (state.source_name) {
+    document.getElementById('dataset-select').value = state.source_name;
+    updateBadges();
+    document.getElementById('btn-training-keys').disabled = false;
+    await reloadEpisodes();
+  } else {
+    setStatus('ready', 'Select a dataset from the dropdown to begin.');
+  }
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -711,6 +834,50 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Home') { e.preventDefault(); goToFrame(0); }
   if (e.key === 'End')  { e.preventDefault(); goToEnd(); }
 });
+
+// ── Create training keys ──────────────────────────────────────────────────────
+async function createTrainingKeys() {
+  const btn = document.getElementById('btn-training-keys');
+  if (btn.classList.contains('done')) return;
+
+  if (!confirm(
+    'Create training keys?\n\n' +
+    'This adds "action.locomanip" (18D) to every parquet file by concatenating:\n' +
+    '  • action.eef          (14D — left/right wrist pos + quat)\n' +
+    '  • teleop.navigate_command  (3D — lin_vel_x/y, ang_vel_z)\n' +
+    '  • teleop.base_height_command (1D)\n\n' +
+    'meta/info.json and meta/modality.json are updated accordingly.\n\n' +
+    'This cannot be undone on the working copy.'
+  )) return;
+
+  showSpinner('Creating training keys across all episodes…');
+  setStatus('busy', 'Creating training keys…');
+  btn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/create_training_keys', { method: 'POST' });
+    const result = await resp.json();
+    hideSpinner();
+
+    if (result.error) {
+      setStatus('err', `Error: ${result.error}`);
+      btn.disabled = false;
+      return;
+    }
+
+    btn.textContent = '✓ Training Keys Ready';
+    btn.classList.add('done');
+    await loadDatasets();  // refresh badges to show "augmented"
+    const warns = result.errors ? ` ⚠ ${result.errors.length} episode(s) failed.` : '';
+    setStatus('ok',
+      `Created "${result.augmented_name}" with "action.locomanip" (18D) ` +
+      `across ${result.processed} episodes.${warns}`);
+  } catch (err) {
+    hideSpinner();
+    setStatus('err', `Request failed: ${err.message}`);
+    btn.disabled = false;
+  }
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 boot();
